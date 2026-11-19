@@ -78,7 +78,7 @@
      workspace()->setActiveOutput(QPoint(640, 512));
      KWin::input()->pointer()->warp(QPoint(640, 512));
  
-@@ -88,6 +120,233 @@
+@@ -88,6 +120,237 @@
  void GlobalShortcutsTest::cleanup()
  {
      Test::destroyWaylandConnection();
@@ -301,9 +301,13 @@
 +    QSignalSpy nextTaskSpy(m_nextTask, &QAction::triggered);
 +    QSignalSpy changingSpy(desktops, &VirtualDesktopManager::currentChanging);
 +    input()->pointer()->processSwipeGestureBegin(fingers, std::chrono::milliseconds(1));
-+    input()->pointer()->processSwipeGestureUpdate(delta, std::chrono::milliseconds(2));
++    // Stock realtime shortcuts queue cancellation callbacks when direction locks.
++    // Drain that first input frame before delivering further progress/release.
++    input()->pointer()->processSwipeGestureUpdate(delta / 24, std::chrono::milliseconds(2));
++    QCoreApplication::processEvents();
++    input()->pointer()->processSwipeGestureUpdate(delta - delta / 24, std::chrono::milliseconds(3));
 +    QVERIFY(!changingSpy.isEmpty());
-+    input()->pointer()->processSwipeGestureEnd(std::chrono::milliseconds(3));
++    input()->pointer()->processSwipeGestureEnd(std::chrono::milliseconds(4));
 +    QTRY_COMPARE(desktops->current(), desktop);
 +    QTest::qWait(50);
 +    QCOMPARE(desktops->current(), desktop);
