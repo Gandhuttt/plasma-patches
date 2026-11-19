@@ -89,6 +89,9 @@ runs:
         PACKAGE: ${{ inputs.package }}
       run: |
         set -euo pipefail
+        # Report the enforced package limit rather than ccache's global default.
+        CCACHE_MAXSIZE=$(nix eval --no-write-lock-file --raw ".#legacyPackages.x86_64-linux.plasmaCompilerCache.limits.${PACKAGE}")
+        export CCACHE_MAXSIZE
         "$CCACHE" --show-stats --verbose | tee "$RUNNER_TEMP/ccache-stats.txt"
         {
           printf '### Compiler cache: %s\n\n```text\n' "$PACKAGE"

@@ -92,8 +92,19 @@ jobs:
       PACKAGE: plasma-workspace
     steps: *build-steps
 
-  desktop:
+  # Desktop builds plasma-pa as a dependency. Build it in its own cache job
+  # first, otherwise its compiler objects are discarded with Desktop's runner.
+  audio:
     needs: workspace
+    if: *trusted-main
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      PACKAGE: plasma-pa
+    steps: *build-steps
+
+  desktop:
+    needs: audio
     if: *trusted-main
     runs-on: ubuntu-24.04
     timeout-minutes: 360
@@ -110,15 +121,14 @@ jobs:
       fail-fast: false
       max-parallel: 2
       matrix:
-        # The support aggregate contains nine distinct compilations. Give each
-        # its own runner/cache so concurrent jobs cannot overwrite snapshots.
+        # Give each remaining package its own runner/cache so concurrent jobs
+        # cannot overwrite snapshots; plasma-pa was handled before Desktop.
         package:
           - kdeplasma-addons
           - bluedevil
           - kinfocenter
           - plasma-browser-integration
           - plasma-login-manager
-          - plasma-pa
           - plasma-setup
           - powerdevil
           - print-manager
