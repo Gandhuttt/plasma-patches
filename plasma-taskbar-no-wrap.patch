@@ -1,0 +1,50 @@
+--- a/applets/taskmanager/qml/main.qml
++++ b/applets/taskmanager/qml/main.qml
+@@ -569,19 +569,20 @@
+-    function buildFlatTaskList() {
+-        const count = taskRepeater.count;
+-        if (count === 0) return [];
+-
+-        let taskIndexList = [];
+-        for (let i = 0; i < count; ++i) {
+-            const item = taskRepeater.itemAt(i);
+-            if (!item || item.model.IsLauncher || item.model.IsStartup) continue;
+-
+-            if (item.model.IsGroupParent) {
+-                for (let j = 0; j < tasksModel.rowCount(item.modelIndex()); ++j) {
+-                    taskIndexList.push(tasksModel.makeModelIndex(i, j));
+-                }
+-            } else if (item.model.IsWindow) {
+-                taskIndexList.push(item.modelIndex());
+-            }
+-        }
+-        return taskIndexList;
+-    }
++    function buildFlatTaskList() {
++        const count = tasksModel.rowCount();
++        if (count === 0) return [];
++
++        let taskIndexList = [];
++        for (let i = 0; i < count; ++i) {
++            const index = tasksModel.makeModelIndex(i);
++            if (tasksModel.data(index, TaskManager.AbstractTasksModel.IsLauncher)
++                || tasksModel.data(index, TaskManager.AbstractTasksModel.IsStartup)) continue;
++
++            if (tasksModel.data(index, TaskManager.AbstractTasksModel.IsGroupParent)) {
++                for (let j = 0; j < tasksModel.rowCount(index); ++j) {
++                    taskIndexList.push(tasksModel.makeModelIndex(i, j));
++                }
++            } else if (tasksModel.data(index, TaskManager.AbstractTasksModel.IsWindow)) {
++                taskIndexList.push(index);
++            }
++        }
++        return taskIndexList;
++    }
+@@ -605,1 +606,2 @@
+-        const prevPos = (activePos - 1 + taskIndexList.length) % taskIndexList.length;
++        if (activePos === 0) return;
++        const prevPos = activePos - 1;
+@@ -616,1 +618,2 @@
+-        const nextPos = (activePos + 1) % taskIndexList.length;
++        if (activePos === taskIndexList.length - 1) return;
++        const nextPos = activePos + 1;

@@ -1,0 +1,39 @@
+--- a/src/virtualdesktops.cpp
++++ b/src/virtualdesktops.cpp
+@@ -16,1 +16,2 @@
+-#include "input.h"
++#include "input.h"
++#include "main.h"
+@@ -29,1 +30,4 @@
+-#include <QDebug>
++#include <QDebug>
++#include <QDBusConnection>
++#include <QDBusMessage>
++#include <QDBusPendingCall>
+@@ -833,2 +837,24 @@
+-    input()->registerAxisShortcut(Qt::MetaModifier | Qt::AltModifier, PointerAxisUp,
+-                                  findChild<QAction *>(QStringLiteral("Switch to Previous Desktop")));
++    input()->registerAxisShortcut(Qt::MetaModifier | Qt::AltModifier, PointerAxisUp,
++                                  findChild<QAction *>(QStringLiteral("Switch to Previous Desktop")));
++
++    // Opt in at session startup; leave ordinary scrolling on its existing path.
++    const KConfigGroup mouseBindings(kwinApp()->config(), QStringLiteral("MouseBindings"));
++    if (mouseBindings.readEntry("NavigationWheel", false)) {
++        input()->registerAxisShortcut(Qt::MetaModifier, PointerAxisDown, nextDesktopAction);
++        input()->registerAxisShortcut(Qt::MetaModifier, PointerAxisUp, previousDesktopAction);
++
++        const auto registerTaskbarWheel = [this](PointerAxisDirection direction, const QString &shortcut) {
++            auto message = QDBusMessage::createMethodCall(QStringLiteral("org.kde.kglobalaccel"),
++                                                        QStringLiteral("/component/plasmashell"),
++                                                        QStringLiteral("org.kde.kglobalaccel.Component"),
++                                                        QStringLiteral("invokeShortcut"));
++            message.setArguments({shortcut});
++            auto action = new QAction(this);
++            connect(action, &QAction::triggered, this, [message]() {
++                QDBusConnection::sessionBus().asyncCall(message);
++            });
++            input()->registerAxisShortcut(Qt::MetaModifier | Qt::ShiftModifier, direction, action);
++        };
++        registerTaskbarWheel(PointerAxisUp, QStringLiteral("activate previous task manager entry"));
++        registerTaskbarWheel(PointerAxisDown, QStringLiteral("activate next task manager entry"));
++    }
