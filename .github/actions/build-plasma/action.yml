@@ -28,7 +28,7 @@ runs:
         done < <(nix eval --no-write-lock-file --json "${metadata}.limits" | jq -r 'keys[]')
         sudo chmod 2770 /var/cache/plasma-ccache
         sudo chown "$(id -un):nixbld" /var/cache/plasma-ccache
-        tool=$(nix build --no-write-lock-file --no-link --print-out-paths "${metadata}.ccache")
+        tool=$(nix build --no-write-lock-file --no-link --print-out-paths "${metadata}.ccache^out")
         echo "tool=$tool/bin/ccache" >> "$GITHUB_OUTPUT"
         # An ACL grants this unprivileged cache-action process access to files
         # written by nixbld users without world-writable cache permissions.
