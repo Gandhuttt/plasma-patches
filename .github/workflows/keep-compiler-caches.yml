@@ -1,0 +1,66 @@
+name: Refresh compiler cache access
+
+on:
+  schedule:
+    # Every three calendar days; month boundaries can shorten the interval.
+    # Public schedules stop after 60 days without repository activity. Normal
+    # user activity is expected; restoring caches is not repository activity.
+    - cron: '17 5 */3 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compiler-cache-keepalive
+  cancel-in-progress: false
+
+jobs:
+  restore:
+    if: github.repository == 'Gandhuttt/plasma-patches' && github.ref == 'refs/heads/main' && github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        package:
+          - kwin
+          - plasma-workspace
+          - plasma-desktop
+          - kdeplasma-addons
+          - bluedevil
+          - kinfocenter
+          - plasma-browser-integration
+          - plasma-login-manager
+          - plasma-pa
+          - plasma-setup
+          - powerdevil
+          - print-manager
+          - xdg-desktop-portal-kde
+    steps:
+      - name: Prepare private restore destination
+        env:
+          PACKAGE: ${{ matrix.package }}
+        run: sudo install -d -m 0700 -o "$(id -un)" -g "$(id -gn)" "/var/cache/plasma-ccache/$PACKAGE"
+
+      - name: Restore without compiling or creating immutable snapshots
+        id: restore
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          # Paths and prefixes MUST match the build action: cache versions also
+          # incorporate the archived path, not just the visible key.
+          path: /var/cache/plasma-ccache/${{ matrix.package }}
+          key: plasma-ccache-v1-5d2b81a7a3be-x86_64-linux-${{ matrix.package }}-keepalive-${{ github.run_id }}
+          restore-keys: plasma-ccache-v1-5d2b81a7a3be-x86_64-linux-${{ matrix.package }}-
+
+      - name: Record actual restored cache key
+        env:
+          PACKAGE: ${{ matrix.package }}
+          MATCHED: ${{ steps.restore.outputs.cache-matched-key }}
+        run: |
+          if [[ -n "$MATCHED" ]]; then
+            echo "Restored $PACKAGE: $MATCHED (refreshes last-access time)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No compiler cache for $PACKAGE yet; its first real build must populate it." >> "$GITHUB_STEP_SUMMARY"
+          fi

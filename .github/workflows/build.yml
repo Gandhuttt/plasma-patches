@@ -17,7 +17,7 @@ concurrency:
 # before the next runner attempts to substitute the preceding package's outputs.
 jobs:
   kwin:
-    if: &trusted-main github.repository == 'Gandhuttt/plasma-patches' && github.ref == 'refs/heads/main'
+    if: &trusted-main github.repository == 'Gandhuttt/plasma-patches' && github.ref == 'refs/heads/main' && github.event.repository.private == false
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
@@ -49,6 +49,8 @@ jobs:
           # none are used by sandboxed Nix builds or the runner's bundled Node.
           sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet \
             /usr/local/.ghcup /usr/local/swift /opt/hostedtoolcache
+          # The configured sandbox bind must exist before any Nix build runs.
+          sudo install -d -m 0755 /var/cache/plasma-ccache
           df -h / /mnt
 
       - name: Install Nix
@@ -62,6 +64,7 @@ jobs:
             cores = 4
             keep-outputs = false
             keep-derivations = false
+            extra-sandbox-paths = /var/cache/plasma-ccache
 
       - name: Configure incremental Cachix uploads
         uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
@@ -75,16 +78,10 @@ jobs:
           # The free public 5 GB cache uses LRU eviction; keep runtime/dev outputs.
           pushFilter: '-(debug|devtools)$'
 
-      - name: Build runtime and downstream development outputs
-        shell: bash
-        run: |
-          installable=".#packages.x86_64-linux.${PACKAGE}"
-          # Preserve workspace's sessions output as well as out/dev. Do not
-          # change derivations to disable symbols: local store paths must match.
-          outputs=$(nix eval --no-write-lock-file --json "${installable}.outputs" \
-            | jq -er 'map(select(. != "debug" and . != "devtools")) | join(",") | select(length > 0)')
-          nix build --no-write-lock-file --no-link --print-build-logs "${installable}^${outputs}"
-          df -h / /mnt /nix/store
+      - name: Build with isolated persistent compiler objects
+        uses: ./.github/actions/build-plasma
+        with:
+          package: ${{ env.PACKAGE }}
 
   workspace:
     needs: kwin
@@ -113,7 +110,19 @@ jobs:
       fail-fast: false
       max-parallel: 2
       matrix:
-        package: [kdeplasma-addons, support]
+        # The support aggregate contains nine distinct compilations. Give each
+        # its own runner/cache so concurrent jobs cannot overwrite snapshots.
+        package:
+          - kdeplasma-addons
+          - bluedevil
+          - kinfocenter
+          - plasma-browser-integration
+          - plasma-login-manager
+          - plasma-pa
+          - plasma-setup
+          - powerdevil
+          - print-manager
+          - xdg-desktop-portal-kde
     env:
       PACKAGE: ${{ matrix.package }}
     steps: *build-steps

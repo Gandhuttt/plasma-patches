@@ -1,28 +1,37 @@
 --- a/src/virtualdesktops.cpp
 +++ b/src/virtualdesktops.cpp
-@@ -16,1 +16,2 @@
--#include "input.h"
-+#include "input.h"
+@@ -12,7 +12,10 @@
+ #include "activities.h"
+ #endif
+ #include "core/output.h"
++#include "gestures.h"
++#include "globalshortcuts.h"
+ #include "input.h"
 +#include "main.h"
-@@ -29,1 +30,4 @@
--#include <QDebug>
-+#include <QDebug>
+ #include "wayland/plasmavirtualdesktop.h"
+ #include "workspace.h"
+ // KDE
+@@ -27,6 +30,9 @@
+ // Qt
+ #include <QAction>
+ #include <QDebug>
 +#include <QDBusConnection>
 +#include <QDBusMessage>
 +#include <QDBusPendingCall>
-@@ -833,2 +837,24 @@
--    input()->registerAxisShortcut(Qt::MetaModifier | Qt::AltModifier, PointerAxisUp,
--                                  findChild<QAction *>(QStringLiteral("Switch to Previous Desktop")));
-+    input()->registerAxisShortcut(Qt::MetaModifier | Qt::AltModifier, PointerAxisUp,
-+                                  findChild<QAction *>(QStringLiteral("Switch to Previous Desktop")));
-+
-+    // Opt in at session startup; leave ordinary scrolling on its existing path.
-+    const KConfigGroup mouseBindings(kwinApp()->config(), QStringLiteral("MouseBindings"));
-+    if (mouseBindings.readEntry("NavigationWheel", false)) {
-+        input()->registerAxisShortcut(Qt::MetaModifier, PointerAxisDown, nextDesktopAction);
-+        input()->registerAxisShortcut(Qt::MetaModifier, PointerAxisUp, previousDesktopAction);
-+
-+        const auto registerTaskbarWheel = [this](PointerAxisDirection direction, const QString &shortcut) {
+ #include <QUuid>
+ 
+ #include <algorithm>
+@@ -766,6 +772,29 @@
+ {
+     initSwitchToShortcuts();
+ 
++    // Read once at startup, like NavigationWheel; defaults remain unchanged.
++    const bool navigationGestures = KConfigGroup(kwinApp()->config(), QStringLiteral("Touchpad")).readEntry("NavigationGestures", false);
++    const bool navigationWheel = KConfigGroup(kwinApp()->config(), QStringLiteral("MouseBindings")).readEntry("NavigationWheel", false);
++    QAction *previousTaskAction = nullptr;
++    QAction *nextTaskAction = nullptr;
++    if (navigationGestures || navigationWheel) {
++        const auto taskbarAction = [this](const QString &shortcut) {
 +            auto message = QDBusMessage::createMethodCall(QStringLiteral("org.kde.kglobalaccel"),
 +                                                        QStringLiteral("/component/plasmashell"),
 +                                                        QStringLiteral("org.kde.kglobalaccel.Component"),
@@ -32,8 +41,91 @@
 +            connect(action, &QAction::triggered, this, [message]() {
 +                QDBusConnection::sessionBus().asyncCall(message);
 +            });
-+            input()->registerAxisShortcut(Qt::MetaModifier | Qt::ShiftModifier, direction, action);
++            return action;
 +        };
-+        registerTaskbarWheel(PointerAxisUp, QStringLiteral("activate previous task manager entry"));
-+        registerTaskbarWheel(PointerAxisDown, QStringLiteral("activate next task manager entry"));
++        // Plasma owns task order and the no-wrap boundary policy for both inputs.
++        previousTaskAction = taskbarAction(QStringLiteral("activate previous task manager entry"));
++        nextTaskAction = taskbarAction(QStringLiteral("activate next task manager entry"));
 +    }
++
+     QAction *nextDesktopAction = addAction(QStringLiteral("Switch to Next Desktop"), i18n("Switch to Next Desktop"), QKeySequence(), &VirtualDesktopManager::slotNext);
+     QAction *previousDesktopAction = addAction(QStringLiteral("Switch to Previous Desktop"), i18n("Switch to Previous Desktop"), QKeySequence(), &VirtualDesktopManager::slotPrevious);
+ 
+@@ -808,22 +837,48 @@
+             emitCurrentChanging();
+         }
+     };
+-    input()->registerTouchpadSwipeShortcut(SwipeDirection::Left, 3, m_swipeGestureReleasedX.get(), left);
+-    input()->registerTouchpadSwipeShortcut(SwipeDirection::Right, 3, m_swipeGestureReleasedX.get(), right);
++    if (navigationGestures) {
++        const auto registerNavigationSwipe = [this](SwipeDirection direction, QAction *action) {
++            auto gesture = new SwipeGesture(3);
++            gesture->setParent(this);
++            gesture->setDirection(direction);
++            // Unlike realtime-feedback shortcuts, cancellation must not invoke an
++            // action. The native recognizer commits once on release at 200 units.
++            connect(gesture, &SwipeGesture::triggered, action, &QAction::trigger, Qt::QueuedConnection);
++            input()->shortcuts()->registerTouchpadSwipe(gesture);
++        };
++        registerNavigationSwipe(SwipeDirection::Left, previousTaskAction);
++        registerNavigationSwipe(SwipeDirection::Right, nextTaskAction);
++        auto previousDesktop = new QAction(this);
++        auto nextDesktop = new QAction(this);
++        connect(previousDesktop, &QAction::triggered, this, [this]() {
++            moveTo(Direction::Previous, false);
++        });
++        connect(nextDesktop, &QAction::triggered, this, [this]() {
++            moveTo(Direction::Next, false);
++        });
++        registerNavigationSwipe(SwipeDirection::Up, previousDesktop);
++        registerNavigationSwipe(SwipeDirection::Down, nextDesktop);
++    } else {
++        input()->registerTouchpadSwipeShortcut(SwipeDirection::Left, 3, m_swipeGestureReleasedX.get(), left);
++        input()->registerTouchpadSwipeShortcut(SwipeDirection::Right, 3, m_swipeGestureReleasedX.get(), right);
++    }
+     input()->registerTouchpadSwipeShortcut(SwipeDirection::Left, 4, m_swipeGestureReleasedX.get(), left);
+     input()->registerTouchpadSwipeShortcut(SwipeDirection::Right, 4, m_swipeGestureReleasedX.get(), right);
+-    input()->registerTouchpadSwipeShortcut(SwipeDirection::Down, 3, m_swipeGestureReleasedY.get(), [this, emitCurrentChanging](qreal cb) {
+-        if (grid().height() > 1) {
+-            m_currentDesktopOffset.setY(-cb);
+-            emitCurrentChanging();
+-        }
+-    });
+-    input()->registerTouchpadSwipeShortcut(SwipeDirection::Up, 3, m_swipeGestureReleasedY.get(), [this, emitCurrentChanging](qreal cb) {
+-        if (grid().height() > 1) {
+-            m_currentDesktopOffset.setY(cb);
+-            emitCurrentChanging();
+-        }
+-    });
++    if (!navigationGestures) {
++        input()->registerTouchpadSwipeShortcut(SwipeDirection::Down, 3, m_swipeGestureReleasedY.get(), [this, emitCurrentChanging](qreal cb) {
++            if (grid().height() > 1) {
++                m_currentDesktopOffset.setY(-cb);
++                emitCurrentChanging();
++            }
++        });
++        input()->registerTouchpadSwipeShortcut(SwipeDirection::Up, 3, m_swipeGestureReleasedY.get(), [this, emitCurrentChanging](qreal cb) {
++            if (grid().height() > 1) {
++                m_currentDesktopOffset.setY(cb);
++                emitCurrentChanging();
++            }
++        });
++    }
+     input()->registerTouchscreenSwipeShortcut(SwipeDirection::Left, 3, m_swipeGestureReleasedX.get(), left);
+     input()->registerTouchscreenSwipeShortcut(SwipeDirection::Right, 3, m_swipeGestureReleasedX.get(), right);
+ 
+@@ -832,6 +887,14 @@
+                                   findChild<QAction *>(QStringLiteral("Switch to Next Desktop")));
+     input()->registerAxisShortcut(Qt::MetaModifier | Qt::AltModifier, PointerAxisUp,
+                                   findChild<QAction *>(QStringLiteral("Switch to Previous Desktop")));
++
++    // Ordinary scrolling and existing Win+wheel bindings keep their own path.
++    if (navigationWheel) {
++        input()->registerAxisShortcut(Qt::MetaModifier, PointerAxisDown, nextDesktopAction);
++        input()->registerAxisShortcut(Qt::MetaModifier, PointerAxisUp, previousDesktopAction);
++        input()->registerAxisShortcut(Qt::MetaModifier | Qt::ShiftModifier, PointerAxisUp, previousTaskAction);
++        input()->registerAxisShortcut(Qt::MetaModifier | Qt::ShiftModifier, PointerAxisDown, nextTaskAction);
++    }
+ }
+ 
+ void VirtualDesktopManager::gestureReleasedY()

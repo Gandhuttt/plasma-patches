@@ -1,0 +1,111 @@
+name: Build one Plasma package with ccache
+description: Restore a package's compiler cache, build all useful outputs, and save changed objects
+inputs:
+  package:
+    description: Exposed Plasma package name
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Prepare sandbox cache and statistics tool
+      id: prepare
+      shell: bash
+      env:
+        PACKAGE: ${{ inputs.package }}
+      run: |
+        set -euo pipefail
+        # Keep this prefix synchronized with keep-compiler-caches.yml. It keys
+        # the pinned compiler/platform/schema, NOT the source revision: edits
+        # must restore old objects. A toolchain/settings change bumps the schema.
+        prefix="plasma-ccache-v1-5d2b81a7a3be-x86_64-linux-${PACKAGE}-"
+        echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+        echo "key=${prefix}${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+        metadata='.#legacyPackages.x86_64-linux.plasmaCompilerCache'
+        # Create all partitions so an unexpectedly unsubstituted dependency can
+        # still build safely, but restore/save ONLY this job's package partition.
+        while IFS= read -r package; do
+          sudo install -d -m 2770 -o "$(id -un)" -g nixbld "/var/cache/plasma-ccache/$package"
+        done < <(nix eval --no-write-lock-file --json "${metadata}.limits" | jq -r 'keys[]')
+        sudo chmod 2770 /var/cache/plasma-ccache
+        sudo chown "$(id -un):nixbld" /var/cache/plasma-ccache
+        tool=$(nix build --no-write-lock-file --no-link --print-out-paths "${metadata}.ccache")
+        echo "tool=$tool/bin/ccache" >> "$GITHUB_OUTPUT"
+        # An ACL grants this unprivileged cache-action process access to files
+        # written by nixbld users without world-writable cache permissions.
+        if ! command -v setfacl >/dev/null; then
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends acl
+        fi
+
+    - name: Restore package compiler objects
+      id: restore
+      uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      with:
+        path: /var/cache/plasma-ccache/${{ inputs.package }}
+        key: ${{ steps.prepare.outputs.key }}
+        restore-keys: ${{ steps.prepare.outputs.prefix }}
+
+    - name: Grant build users and runner private cache access
+      id: before
+      shell: bash
+      env:
+        PACKAGE: ${{ inputs.package }}
+        CCACHE: ${{ steps.prepare.outputs.tool }}
+      run: |
+        set -euo pipefail
+        # Restore archives do not carry ACLs. Reapply both existing-file access
+        # and inherited access before the daemon starts writing new cache files.
+        sudo chgrp -R nixbld /var/cache/plasma-ccache
+        sudo chmod -R g+rwX,o-rwx /var/cache/plasma-ccache
+        sudo find /var/cache/plasma-ccache -type d -exec chmod g+s {} +
+        sudo setfacl -R -m "u:$(id -un):rwX" /var/cache/plasma-ccache
+        sudo find /var/cache/plasma-ccache -type d -exec setfacl -m "d:u:$(id -un):rwx" {} +
+        export CCACHE_DIR="/var/cache/plasma-ccache/$PACKAGE"
+        misses=$("$CCACHE" --print-stats | awk '$1 == "cache_miss" {print $2}')
+        [[ "$misses" =~ ^[0-9]+$ ]]
+        echo "misses=$misses" >> "$GITHUB_OUTPUT"
+
+    - name: Build runtime and downstream development outputs
+      shell: bash
+      env:
+        PACKAGE: ${{ inputs.package }}
+      run: |
+        set -euo pipefail
+        installable=".#packages.x86_64-linux.${PACKAGE}"
+        # Preserve sessions/out/dev without changing the debug-output derivation.
+        outputs=$(nix eval --no-write-lock-file --json "${installable}.outputs" \
+          | jq -er 'map(select(. != "debug" and . != "devtools")) | join(",") | select(length > 0)')
+        nix build --no-write-lock-file --no-link --print-build-logs "${installable}^${outputs}"
+        df -h / /mnt /nix/store
+
+    - name: Report compiler hits misses and size
+      id: after
+      if: ${{ always() && steps.before.outcome == 'success' }}
+      shell: bash
+      env:
+        CCACHE: ${{ steps.prepare.outputs.tool }}
+        CCACHE_DIR: /var/cache/plasma-ccache/${{ inputs.package }}
+        BEFORE_MISSES: ${{ steps.before.outputs.misses }}
+        PACKAGE: ${{ inputs.package }}
+      run: |
+        set -euo pipefail
+        "$CCACHE" --show-stats --verbose | tee "$RUNNER_TEMP/ccache-stats.txt"
+        {
+          printf '### Compiler cache: %s\n\n```text\n' "$PACKAGE"
+          cat "$RUNNER_TEMP/ccache-stats.txt"
+          printf '\n```\n'
+        } >> "$GITHUB_STEP_SUMMARY"
+        misses=$("$CCACHE" --print-stats | awk '$1 == "cache_miss" {print $2}')
+        [[ "$misses" =~ ^[0-9]+$ ]]
+        # Hits/statistics/access-time updates alone do not justify another
+        # immutable snapshot. Substituted builds therefore save nothing either.
+        if [[ "$misses" != "$BEFORE_MISSES" ]]; then
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Save newly compiled objects including partial successful work
+      if: ${{ !cancelled() && steps.after.outputs.changed == 'true' }}
+      uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      with:
+        path: /var/cache/plasma-ccache/${{ inputs.package }}
+        key: ${{ steps.prepare.outputs.key }}

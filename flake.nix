@@ -1,5 +1,5 @@
 {
-  description = "Native KDE navigation-wheel and taskbar patches";
+  description = "Cached builds for native KDE wheel, touchpad and taskbar navigation";
 
   # Keep this revision identical to the local NixOS package set: changing it
   # changes derivation paths and prevents substitution of these remote builds.
@@ -20,6 +20,7 @@
       modules = [
         (import ./kwin-navigation-wheel.nix { inherit (nixpkgs) lib; })
         (import ./plasma-taskbar-no-wrap.nix { })
+        (import ./plasma-compiler-cache.nix { inherit (nixpkgs) lib; })
       ];
       pkgs = import nixpkgs {
         inherit system;
@@ -49,7 +50,13 @@
       );
     in
     {
-      packages.${system} = {
+      nixosModules.compiler-cache = import ./plasma-compiler-cache.nix;
+      # Metadata/tools let CI and throwaway smoke derivations use exactly the
+      # same wrapped compiler, limits and sandbox path as the desktop builds.
+      legacyPackages.${system}.plasmaCompilerCache = pkgs.plasmaCompilerCache;
+      packages.${system} = builtins.listToAttrs (
+        map (name: { inherit name; value = kde.${name}; }) supportNames
+      ) // {
         inherit (kde) kwin plasma-workspace plasma-desktop kdeplasma-addons;
         inherit support;
         # Hold runtime and development outputs in the cache, without forcing

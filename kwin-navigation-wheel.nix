@@ -1,7 +1,7 @@
 { lib, ... }:
 {
-  # Opt in per user with [MouseBindings] NavigationWheel=true in kwinrc.
-  # Reuse KWin's native axis shortcuts; no evdev grab or virtual input device.
+  # Opt in per user in kwinrc: [MouseBindings] NavigationWheel=true and/or
+  # [Touchpad] NavigationGestures=true. Native recognition leaves scroll intact.
   nixpkgs.overlays = [
     (_final: previous: {
       kdePackages = previous.kdePackages.overrideScope (_kfinal: kprevious: {
@@ -27,10 +27,18 @@
           doCheck = true;
           checkPhase = ''
             runHook preCheck
-            export XDG_RUNTIME_DIR="$TMPDIR/kwin-wheel-runtime"
+            export XDG_RUNTIME_DIR="$TMPDIR/kwin-navigation-runtime"
             mkdir -m 700 "$XDG_RUNTIME_DIR"
-            dbus-run-session --config-file=${previous.dbus}/share/dbus-1/session.conf \
-              ./bin/testGlobalShortcuts testNavigationWheel
+            # Separate compositor processes test opted-in and absent-option paths.
+            # KWin initializes its linked KGlobalAccelD on this private bus; do not
+            # launch an external daemon. WAYLANDTEST_MAIN selects KWin's own QPA.
+            KWIN_TEST_NAVIGATION_GESTURES=1 \
+              dbus-run-session --config-file=${previous.dbus}/share/dbus-1/session.conf \
+              ./bin/testGlobalShortcuts testNavigationWheel testNavigationGestures \
+                testNavigationGestureBoundaries testDefaultTouchpadGestures
+            KWIN_TEST_NAVIGATION_GESTURES=0 \
+              dbus-run-session --config-file=${previous.dbus}/share/dbus-1/session.conf \
+              ./bin/testGlobalShortcuts testNavigationWheel testDefaultTouchpadGestures
             runHook postCheck
           '';
         });
