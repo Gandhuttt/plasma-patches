@@ -4,6 +4,9 @@ inputs:
   package:
     description: Exposed Plasma package name
     required: true
+  cachix-auth-token:
+    description: Scoped token for publishing every selected output
+    required: true
 runs:
   using: composite
   steps:
@@ -75,8 +78,18 @@ runs:
         # Preserve sessions/out/dev without changing the debug-output derivation.
         outputs=$(nix eval --no-write-lock-file --json "${installable}.outputs" \
           | jq -er 'map(select(. != "debug" and . != "devtools")) | join(",") | select(length > 0)')
-        nix build --no-write-lock-file --no-link --print-build-logs "${installable}^${outputs}"
+        nix build --no-write-lock-file --no-link --print-build-logs --print-out-paths \
+          "${installable}^${outputs}" > "$RUNNER_TEMP/plasma-${PACKAGE}-outputs"
         df -h / /mnt /nix/store
+
+    - name: Publish all runtime and development outputs
+      shell: bash
+      env:
+        PACKAGE: ${{ inputs.package }}
+        CACHIX_AUTH_TOKEN: ${{ inputs.cachix-auth-token }}
+      # Post-build hooks don't cover substituted outputs; publish the complete
+      # requested set explicitly so downstream builds never lose headers.
+      run: cachix push gandhuttt-plasma < "$RUNNER_TEMP/plasma-${PACKAGE}-outputs"
 
     - name: Report compiler hits misses and size
       id: after

@@ -82,6 +82,7 @@ jobs:
         uses: ./.github/actions/build-plasma
         with:
           package: ${{ env.PACKAGE }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
   workspace:
     needs: kwin
