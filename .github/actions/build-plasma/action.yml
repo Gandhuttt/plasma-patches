@@ -78,8 +78,12 @@ runs:
         # Preserve sessions/out/dev without changing the debug-output derivation.
         outputs=$(nix eval --no-write-lock-file --json "${installable}.outputs" \
           | jq -er 'map(select(. != "debug" and . != "devtools")) | join(",") | select(length > 0)')
+        sandbox=()
+        if [[ "$PACKAGE" == kwin ]]; then
+          sandbox=(--option extra-sandbox-paths /dev/udmabuf)
+        fi
         nix build --no-write-lock-file --no-link --print-build-logs --print-out-paths \
-          "${installable}^${outputs}" > "$RUNNER_TEMP/plasma-${PACKAGE}-outputs"
+          "${sandbox[@]}" "${installable}^${outputs}" > "$RUNNER_TEMP/plasma-${PACKAGE}-outputs"
         df -h / /mnt /nix/store
 
     - name: Publish all runtime and development outputs

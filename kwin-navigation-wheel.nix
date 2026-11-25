@@ -19,7 +19,7 @@
             (flag: !lib.hasPrefix "-DBUILD_TESTING" flag)
             (old.cmakeFlags or [ ]) ++ [ "-DBUILD_TESTING=ON" ];
           buildInputs = (old.buildInputs or [ ]) ++ [ kprevious.kwayland ];
-          nativeCheckInputs = (old.nativeCheckInputs or [ ]) ++ [ previous.dbus ];
+          nativeCheckInputs = (old.nativeCheckInputs or [ ]) ++ [ previous.dbus previous.gdb ];
           # Build production targets normally, then only the relevant test binary.
           postPatch = (old.postPatch or "") + ''
             substituteInPlace CMakeLists.txt \
@@ -34,6 +34,11 @@
             runHook preCheck
             export XDG_RUNTIME_DIR="$TMPDIR/kwin-navigation-runtime"
             mkdir -m 700 "$XDG_RUNTIME_DIR"
+            # Real native previews need KWin's EGL compositor, not just a
+            # software Qt Quick backend. CI binds a readable /dev/udmabuf.
+            export __EGL_VENDOR_LIBRARY_FILENAMES=${previous.mesa}/share/glvnd/egl_vendor.d/50_mesa.json
+            export LIBGL_ALWAYS_SOFTWARE=1
+            export FONTCONFIG_FILE=${previous.makeFontsConf { fontDirectories = [ previous.dejavu_fonts ]; }}
             # Separate compositor processes test opted-in and absent-option paths.
             # KWin initializes its linked KGlobalAccelD on this private bus; do not
             # launch an external daemon. WAYLANDTEST_MAIN selects KWin's own QPA.
@@ -50,9 +55,10 @@
             XDG_DATA_DIRS="$TMPDIR/kwin-tabbox-data''${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}" \
               QT_PLUGIN_PATH="$PWD/bin''${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}" \
               QML_IMPORT_PATH="$PWD/bin''${QML_IMPORT_PATH:+:$QML_IMPORT_PATH}" \
-              QT_QUICK_BACKEND=software \
+              QSG_RHI_BACKEND=opengl \
               dbus-run-session --config-file=${previous.dbus}/share/dbus-1/session.conf \
-              ./bin/testTabBox testTaskbarNavigation testTaskbarUpdates \
+              gdb --batch --return-child-result -ex run -ex "thread apply all bt" \
+              --args ./bin/testTabBox testTaskbarNavigation testTaskbarUpdates \
                 testTaskbarProviders testTaskbarDesktopFilter testTaskbarDefaultMode \
                 testMoveForward testMoveBackward
             runHook postCheck

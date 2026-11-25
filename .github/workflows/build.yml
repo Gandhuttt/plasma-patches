@@ -66,6 +66,19 @@ jobs:
             keep-derivations = false
             extra-sandbox-paths = /var/cache/plasma-ccache
 
+      - name: Prepare native headless rendering
+        if: env.PACKAGE == 'kwin'
+        shell: bash
+        run: |
+          # KWin's supported software EGL device allocates buffers via udmabuf.
+          # This is the disposable hosted runner, never the user's workstation.
+          [[ "$GITHUB_ACTIONS" == true && "$RUNNER_ENVIRONMENT" == github-hosted && "$RUNNER_OS" == Linux ]]
+          sudo modprobe udmabuf
+          sudo udevadm settle
+          test -c /dev/udmabuf
+          sudo chgrp nixbld /dev/udmabuf
+          sudo chmod 0660 /dev/udmabuf
+
       - name: Configure incremental Cachix uploads
         uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
