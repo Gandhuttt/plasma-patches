@@ -268,7 +268,7 @@
 -    if (window->skipSwitcher()) {
 +    // Even initially excluded windows can become eligible while the switcher is open.
 +    watchWindow(window);
-+    if (window->skipSwitcher() && m_tabBox->config().clientSwitchingMode() != TabBoxConfig::TaskbarOrderSwitching) {
++    if (window->skipSwitcher()) {
          return;
      }
 -    watchWindow(window);
