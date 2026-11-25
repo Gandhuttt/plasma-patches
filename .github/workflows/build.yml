@@ -76,13 +76,20 @@ jobs:
           if ! sudo modprobe udmabuf; then
             kernel=$(uname -r)
             sudo apt-get update -qq
-            if apt-cache show "linux-modules-extra-$kernel" >/dev/null 2>&1; then
-              package="linux-modules-extra-$kernel"
-            else
-              package="linux-modules-$kernel"
-            fi
-            sudo apt-get install -y --no-install-recommends "$package"
-            sudo modprobe udmabuf
+            sudo apt-get install -y --no-install-recommends "linux-headers-$kernel" make
+            build="/lib/modules/$kernel/build"
+            compiler=$(awk -F= '$1 == "CONFIG_GCC_VERSION" { print "gcc-" int($2 / 10000) }' "$build/.config")
+            sudo apt-get install -y --no-install-recommends "$compiler"
+            module="$RUNNER_TEMP/udmabuf"
+            mkdir "$module"
+            # AWS kernels omit this optional driver. Build the unmodified,
+            # pinned upstream module against this runner's own kernel headers.
+            curl --fail --location --silent --show-error \
+              https://raw.githubusercontent.com/torvalds/linux/028ef9c96e96197026887c0f092424679298aae8/drivers/dma-buf/udmabuf.c \
+              --output "$module/udmabuf.c"
+            printf 'obj-m += udmabuf.o\n' > "$module/Makefile"
+            make -C "$build" M="$module" CC="$compiler" modules
+            sudo insmod "$module/udmabuf.ko"
           fi
           sudo udevadm settle
           test -c /dev/udmabuf
