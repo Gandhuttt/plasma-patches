@@ -73,7 +73,17 @@ jobs:
           # KWin's supported software EGL device allocates buffers via udmabuf.
           # This is the disposable hosted runner, never the user's workstation.
           [[ "$GITHUB_ACTIONS" == true && "$RUNNER_ENVIRONMENT" == github-hosted && "$RUNNER_OS" == Linux ]]
-          sudo modprobe udmabuf
+          if ! sudo modprobe udmabuf; then
+            kernel=$(uname -r)
+            sudo apt-get update -qq
+            if apt-cache show "linux-modules-extra-$kernel" >/dev/null 2>&1; then
+              package="linux-modules-extra-$kernel"
+            else
+              package="linux-modules-$kernel"
+            fi
+            sudo apt-get install -y --no-install-recommends "$package"
+            sudo modprobe udmabuf
+          fi
           sudo udevadm settle
           test -c /dev/udmabuf
           sudo chgrp nixbld /dev/udmabuf
