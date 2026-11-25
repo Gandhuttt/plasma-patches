@@ -538,8 +538,8 @@
 +Window *TabBoxTest::createTaskbarWindow()
 +{
 +    TaskbarWindow entry;
-+    entry.surface.reset(Test::createSurface());
-+    entry.shell.reset(Test::createXdgToplevelSurface(entry.surface.get()));
++    entry.surface = Test::createSurface();
++    entry.shell = Test::createXdgToplevelSurface(entry.surface.get());
 +    entry.window = Test::renderAndWaitForShown(entry.surface.get(), QSize(120, 80), Qt::blue);
 +    Window *window = entry.window;
 +    m_taskbarWindows.push_back(std::move(entry));
