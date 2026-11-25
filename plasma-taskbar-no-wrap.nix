@@ -6,7 +6,12 @@
     (_final: previous: {
       kdePackages = previous.kdePackages.overrideScope (_kfinal: kprevious: {
         plasma-desktop = kprevious.plasma-desktop.overrideAttrs (old: {
-          patches = (old.patches or [ ]) ++ [ ./plasma-taskbar-no-wrap.patch ];
+          # Publish filtered taskbar order to KWin without waiting for icon
+          # animations; unregister on removal and republish after KWin restarts.
+          patches = (old.patches or [ ]) ++ [
+            ./plasma-taskbar-no-wrap.patch
+            ./plasma-taskbar-switcher.patch
+          ];
         });
       });
     })

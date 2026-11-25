@@ -1,5 +1,5 @@
 {
-  description = "Cached builds for native KDE wheel, touchpad and taskbar navigation";
+  description = "Cached KDE builds for native wheel, touchpad and taskbar-ordered window switching";
 
   # Keep this revision identical to the local NixOS package set: changing it
   # changes derivation paths and prevents substitution of these remote builds.

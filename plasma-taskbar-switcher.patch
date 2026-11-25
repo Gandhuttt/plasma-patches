@@ -1,0 +1,102 @@
+--- a/applets/taskmanager/qml/main.qml
++++ b/applets/taskmanager/qml/main.qml
+@@ -276,6 +276,83 @@
+         watchedService: "org.kde.KWin.Effect.WindowView1"
+     }
+ 
++    // Publish the filtered model order, independently of delegates and their animations.
++    property string lastPublishedTaskbarOrder: ""
++
++    function publishTaskbarWindowOrder(): void {
++        if (!kwinWatcher.registered) {
++            return;
++        }
++
++        const windowIds = [];
++        for (const index of buildFlatTaskList()) {
++            if (!tasksModel.data(index, TaskManager.AbstractTasksModel.IsWindow)
++                || tasksModel.data(index, TaskManager.AbstractTasksModel.IsLauncher)
++                || tasksModel.data(index, TaskManager.AbstractTasksModel.IsStartup)) {
++                continue;
++            }
++            for (const windowId of tasksModel.data(index, TaskManager.AbstractTasksModel.WinIdList)) {
++                windowIds.push(String(windowId));
++            }
++        }
++
++        const order = JSON.stringify(windowIds);
++        if (order === lastPublishedTaskbarOrder) {
++            return;
++        }
++        lastPublishedTaskbarOrder = order;
++
++        const reply = DBus.SessionBus.asyncCall({
++            service: "org.kde.KWin", path: "/KWin", iface: "org.kde.KWin",
++            member: "setTaskbarWindowOrder", arguments: [Plasmoid.id, windowIds], signature: "(uas)"
++        });
++        reply.finished.connect(() => {
++            if (reply.isError) {
++                console.debug("Publishing taskbar window order failed:", reply.error.message);
++            }
++            reply.destroy();
++        });
++    }
++
++    Timer {
++        id: taskbarOrderTimer
++        interval: 0
++        repeat: false
++        onTriggered: tasks.publishTaskbarWindowOrder()
++    }
++
++    DBus.DBusServiceWatcher {
++        id: kwinWatcher
++        busType: DBus.BusType.Session
++        watchedService: "org.kde.KWin"
++        onRegisteredChanged: {
++            tasks.lastPublishedTaskbarOrder = "";
++            if (registered) {
++                taskbarOrderTimer.restart();
++            }
++        }
++    }
++
++    Connections {
++        target: tasksModel
++
++        function onRowsInserted(): void { taskbarOrderTimer.restart(); }
++        function onRowsRemoved(): void { taskbarOrderTimer.restart(); }
++        function onRowsMoved(): void { taskbarOrderTimer.restart(); }
++        function onModelReset(): void { taskbarOrderTimer.restart(); }
++        function onLayoutChanged(): void { taskbarOrderTimer.restart(); }
++        function onDataChanged(topLeft, bottomRight, roles): void {
++            if (roles.length === 0
++                || roles.includes(TaskManager.AbstractTasksModel.WinIdList)
++                || roles.includes(TaskManager.AbstractTasksModel.IsWindow)
++                || roles.includes(TaskManager.AbstractTasksModel.IsLauncher)
++                || roles.includes(TaskManager.AbstractTasksModel.IsStartup)
++                || roles.includes(TaskManager.AbstractTasksModel.IsGroupParent)) {
++                taskbarOrderTimer.restart();
++            }
++        }
++    }
++
+     readonly property Component taskInitComponent: Component {
+         Timer {
+             interval: 200
+@@ -677,9 +754,15 @@
+     Component.onCompleted: {
+         TaskManagerApplet.TaskTools.taskManagerInstanceCount += 1;
+         requestLayout.connect(iconGeometryTimer.restart);
++        taskbarOrderTimer.restart();
+     }
+ 
+     Component.onDestruction: {
++        taskbarOrderTimer.stop();
++        DBus.SessionBus.asyncCall({
++            service: "org.kde.KWin", path: "/KWin", iface: "org.kde.KWin",
++            member: "removeTaskbarWindowOrder", arguments: [Plasmoid.id], signature: "(u)"
++        });
+         TaskManagerApplet.TaskTools.taskManagerInstanceCount -= 1;
+     }
+ }

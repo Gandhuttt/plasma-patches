@@ -1,0 +1,820 @@
+--- a/src/dbusinterface.h
++++ b/src/dbusinterface.h
+@@ -12,8 +12,10 @@
+ #include <QDBusContext>
+ #include <QDBusMessage>
+ #include <QObject>
++#include <QStringList>
+ 
+ #include "virtualdesktopsdbustypes.h"
++#include "kwin_export.h"
+ 
+ namespace KWin
+ {
+@@ -36,7 +38,7 @@
+  *
+  * @author Martin Gräßlin <mgraesslin@kde.org>
+  */
+-class DBusInterface : public QObject, protected QDBusContext
++class KWIN_EXPORT DBusInterface : public QObject, protected QDBusContext
+ {
+     Q_OBJECT
+     Q_CLASSINFO("D-Bus Interface", "org.kde.KWin")
+@@ -60,6 +62,8 @@
+     QString activeOutputName();
+     Q_NOREPLY void showDebugConsole();
+ 
++    void setTaskbarWindowOrder(uint sourceId, const QStringList &windowIds);
++    void removeTaskbarWindowOrder(uint sourceId);
+     /**
+      * Instructs kwin_wayland to restart itself.
+      *
+--- a/src/dbusinterface.cpp
++++ b/src/dbusinterface.cpp
+@@ -22,6 +22,9 @@
+ #include "main.h"
+ #include "placement.h"
+ #include "pluginmanager.h"
++#if KWIN_BUILD_TABBOX
++#include "tabbox/tabbox.h"
++#endif
+ #include "virtualdesktops.h"
+ #include "window.h"
+ #include "workspace.h"
+@@ -66,6 +69,20 @@
+     Workspace::self()->reconfigure();
+ }
+ 
++void DBusInterface::setTaskbarWindowOrder(uint sourceId, const QStringList &windowIds)
++{
++#if KWIN_BUILD_TABBOX
++    workspace()->tabbox()->setTaskbarWindowOrder(sourceId, windowIds);
++#endif
++}
++
++void DBusInterface::removeTaskbarWindowOrder(uint sourceId)
++{
++#if KWIN_BUILD_TABBOX
++    workspace()->tabbox()->removeTaskbarWindowOrder(sourceId);
++#endif
++}
++
+ void DBusInterface::killWindow()
+ {
+     Workspace::self()->slotKillWindow();
+--- a/src/org.kde.KWin.xml
++++ b/src/org.kde.KWin.xml
+@@ -17,6 +17,13 @@
+     </method>
+     <method name="nextDesktop"/>
+     <method name="previousDesktop"/>
++    <method name="setTaskbarWindowOrder">
++      <arg name="sourceId" type="u" direction="in"/>
++      <arg name="windowIds" type="as" direction="in"/>
++    </method>
++    <method name="removeTaskbarWindowOrder">
++      <arg name="sourceId" type="u" direction="in"/>
++    </method>
+     <signal name="reloadConfig"/>
+     <method name="supportInformation">
+         <arg type="s" direction="out"/>
+--- a/src/tabbox/tabbox.h
++++ b/src/tabbox/tabbox.h
+@@ -16,7 +16,10 @@
+ 
+ #include <QKeySequence>
+ #include <QModelIndex>
++#include <QMap>
++#include <QStringList>
+ #include <QTimer>
++#include <QUuid>
+ 
+ class KConfigGroup;
+ class KLazyLocalizedString;
+@@ -56,6 +59,7 @@
+     bool isInFocusChain(Window *client) const override;
+     QList<Window *> stackingOrder() const override;
+     void raiseClient(Window *client) const override;
++    QList<Window *> taskbarOrder() const override;
+     Window *clientToAddToList(Window *client) const override;
+     Window *desktopClient() const override;
+     void activateAndClose() override;
+@@ -98,6 +102,10 @@
+      */
+     void setCurrentClient(Window *newClient);
+ 
++    void setTaskbarWindowOrder(uint sourceId, const QStringList &windowIds);
++    void removeTaskbarWindowOrder(uint sourceId);
++    QList<Window *> taskbarOrder() const;
++
+     /**
+      * Return whether the active client is present in the client list.
+      */
+@@ -251,6 +259,7 @@
+     void handleWindowAdded(Window *window);
+     void handleWindowRemoved(Window *window);
+     void handleWindowClosed(Window *window);
++    void refreshTaskbarOrder();
+ 
+     bool startKDEWalkThroughWindows(bool forward, TabBoxMode mode); // TabBoxWindowsMode | TabBoxWindowsAlternativeMode
+     void navigatingThroughWindows(bool forward, const QList<QKeySequence> &shortcut, TabBoxMode mode); // TabBoxWindowsMode | TabBoxWindowsAlternativeMode
+@@ -274,6 +283,7 @@
+ private:
+     TabBoxMode m_tabBoxMode;
+     TabBoxHandlerImpl *m_tabBox;
++    QMap<uint, QList<QUuid>> m_taskbarWindowOrders;
+     int m_delayShowTime;
+ 
+     QTimer m_delayedShowTimer;
+--- a/src/tabbox/tabbox.cpp
++++ b/src/tabbox/tabbox.cpp
+@@ -28,12 +28,15 @@
+ #include "workspace.h"
+ // Qt
+ #include <QAction>
++#include <QDBusConnection>
++#include <QDBusServiceWatcher>
+ #include <QKeyEvent>
+ // KDE
+ #include <KConfig>
+ #include <KConfigGroup>
+ #include <KGlobalAccel>
+ #include <KLazyLocalizedString>
++#include <algorithm>
+ 
+ namespace KWin
+ {
+@@ -196,6 +199,11 @@
+     return ret;
+ }
+ 
++QList<Window *> TabBoxHandlerImpl::taskbarOrder() const
++{
++    return m_tabBox->taskbarOrder();
++}
++
+ void TabBoxHandlerImpl::raiseClient(Window *c) const
+ {
+     Workspace::self()->raiseWindow(c);
+@@ -288,6 +296,14 @@
+     connect(Workspace::self(), &Workspace::configChanged, this, &TabBox::reconfigure);
+     connect(Workspace::self(), &Workspace::windowAdded, this, &TabBox::handleWindowAdded);
+     connect(Workspace::self(), &Workspace::windowRemoved, this, &TabBox::handleWindowRemoved);
++    connect(Workspace::self(), &Workspace::currentDesktopChanged, this, &TabBox::refreshTaskbarOrder);
++    connect(Workspace::self(), &Workspace::currentActivityChanged, this, &TabBox::refreshTaskbarOrder);
++    auto watcher = new QDBusServiceWatcher(QStringLiteral("org.kde.plasmashell"), QDBusConnection::sessionBus(),
++                                          QDBusServiceWatcher::WatchForOwnerChange, this);
++    connect(watcher, &QDBusServiceWatcher::serviceOwnerChanged, this, [this]() {
++        m_taskbarWindowOrders.clear();
++        refreshTaskbarOrder();
++    });
+     Workspace::self()->forEachWindow([this](Window *window) {
+         watchWindow(window);
+     });
+@@ -388,8 +404,80 @@
+     }
+ }
+ 
++void TabBox::setTaskbarWindowOrder(uint sourceId, const QStringList &windowIds)
++{
++    QList<QUuid> order;
++    order.reserve(windowIds.size());
++    for (const QString &id : windowIds) {
++        const QUuid uuid(id);
++        if (uuid.isNull() || order.contains(uuid)) {
++            continue;
++        }
++        Window *window = workspace()->findWindow(uuid);
++        if (window && !window->isDeleted() && window->isClient()) {
++            order.append(uuid);
++        }
++    }
++    // An empty snapshot is authoritative, unlike the absence of a publisher.
++    m_taskbarWindowOrders.insert(sourceId, order);
++    refreshTaskbarOrder();
++}
++
++void TabBox::removeTaskbarWindowOrder(uint sourceId)
++{
++    if (m_taskbarWindowOrders.remove(sourceId)) {
++        refreshTaskbarOrder();
++    }
++}
++
++QList<Window *> TabBox::taskbarOrder() const
++{
++    if (m_taskbarWindowOrders.isEmpty()) {
++        auto order = workspace()->windows();
++        order.removeIf([](Window *window) {
++            return !window->isClient() || window->isDeleted();
++        });
++        return order;
++    }
++    QList<Window *> order;
++    order.reserve(m_taskbarWindowOrders.first().size());
++    for (const QUuid &uuid : m_taskbarWindowOrders.first()) {
++        Window *window = workspace()->findWindow(uuid);
++        if (window && !window->isDeleted() && window->isClient()) {
++            order.append(window);
++        }
++    }
++    return order;
++}
++
++void TabBox::refreshTaskbarOrder()
++{
++    if (isGrabbed() && m_tabBox->config().clientSwitchingMode() == TabBoxConfig::TaskbarOrderSwitching) {
++        reset(true);
++    }
++}
++
+ void TabBox::reset(bool partial_reset)
+ {
++    if (m_tabBox->config().clientSwitchingMode() == TabBoxConfig::TaskbarOrderSwitching) {
++        Window *selected = partial_reset ? currentClient() : workspace()->activeWindow();
++        const int oldRow = m_tabBox->currentIndex().row();
++        m_tabBox->createModel(partial_reset);
++        m_tabBox->setCurrentIndex(QModelIndex());
++        const QModelIndex selectedIndex = m_tabBox->index(selected);
++        if (selectedIndex.isValid()) {
++            setCurrentIndex(selectedIndex);
++        } else if (partial_reset && !m_tabBox->clientList().isEmpty()) {
++            const auto clients = m_tabBox->clientList();
++            setCurrentIndex(m_tabBox->index(clients.at(std::clamp(oldRow, 0, int(clients.size()) - 1))));
++        } else {
++            // Keep the initial selection invalid if the active window is absent.
++            // nextPrev() then enters at the appropriate edge, without skipping it.
++            setCurrentIndex(QModelIndex());
++        }
++        Q_EMIT tabBoxUpdated();
++        return;
++    }
+     m_tabBox->createModel(partial_reset);
+     if (!partial_reset) {
+         const QModelIndex activeIndex = m_tabBox->index(workspace()->activeWindow());
+@@ -412,14 +500,20 @@
+     connect(window, &Window::closed, this, [this, window]() {
+         handleWindowClosed(window);
+     });
++    connect(window, &Window::desktopsChanged, this, &TabBox::refreshTaskbarOrder);
++    connect(window, &Window::activitiesChanged, this, &TabBox::refreshTaskbarOrder);
++    connect(window, &Window::minimizedChanged, this, &TabBox::refreshTaskbarOrder);
++    connect(window, &Window::skipSwitcherChanged, this, &TabBox::refreshTaskbarOrder);
++    connect(window, &Window::outputChanged, this, &TabBox::refreshTaskbarOrder);
+ }
+ 
+ void TabBox::handleWindowAdded(Window *window)
+ {
+-    if (window->skipSwitcher()) {
++    // Even initially excluded windows can become eligible while the switcher is open.
++    watchWindow(window);
++    if (window->skipSwitcher() && m_tabBox->config().clientSwitchingMode() != TabBoxConfig::TaskbarOrderSwitching) {
+         return;
+     }
+-    watchWindow(window);
+     reset(true);
+ }
+ 
+@@ -430,6 +524,10 @@
+ 
+ void TabBox::handleWindowClosed(Window *window)
+ {
++    if (m_tabBox->config().clientSwitchingMode() == TabBoxConfig::TaskbarOrderSwitching) {
++        reset(true);
++        return;
++    }
+     if (isDisplayed() && currentClient() == window) {
+         nextPrev(true);
+     }
+@@ -465,7 +563,7 @@
+ 
+ void TabBox::setCurrentIndex(QModelIndex index, bool notifyEffects)
+ {
+-    if (!index.isValid()) {
++    if (!index.isValid() && m_tabBox->config().clientSwitchingMode() != TabBoxConfig::TaskbarOrderSwitching) {
+         return;
+     }
+     m_tabBox->setCurrentIndex(index);
+@@ -827,7 +925,7 @@
+     setMode(mode);
+     reset();
+ 
+-    if (haveActiveClient()) {
++    if (haveActiveClient() || m_tabBox->config().clientSwitchingMode() == TabBoxConfig::TaskbarOrderSwitching) {
+         nextPrev(forward);
+     }
+ 
+@@ -900,7 +998,7 @@
+     setMode(mode);
+     reset();
+ 
+-    if (haveActiveClient()) {
++    if (haveActiveClient() || m_tabBox->config().clientSwitchingMode() == TabBoxConfig::TaskbarOrderSwitching) {
+         nextPrev(forward);
+     }
+ 
+--- a/src/tabbox/tabboxconfig.h
++++ b/src/tabbox/tabboxconfig.h
+@@ -108,6 +108,7 @@
+     enum ClientSwitchingMode {
+         FocusChainSwitching, ///< Sort by recently used. Most recently used Window is the first
+         StackingOrderSwitching, ///< Sort by current stacking order
++        TaskbarOrderSwitching = 2, ///< Published taskbar order, without wrapping
+     };
+     /**
+      * ShowScreenMode defines on which screen the TabBox should be shown.
+--- a/src/tabbox/tabboxhandler.h
++++ b/src/tabbox/tabboxhandler.h
+@@ -135,6 +135,10 @@
+      */
+     virtual QList<Window *> stackingOrder() const = 0;
+     /**
++     * Published taskbar order, or stable workspace order without a publisher.
++     */
++    virtual QList<Window *> taskbarOrder() const;
++    /**
+      * Determines if given client will be added to the list:
+      * <UL>
+      * <LI>if the client wants to have tab focus.</LI>
+--- a/src/tabbox/tabboxhandler.cpp
++++ b/src/tabbox/tabboxhandler.cpp
+@@ -322,10 +322,25 @@
+ #endif
+ }
+ 
++QList<Window *> TabBoxHandler::taskbarOrder() const
++{
++    return {};
++}
++
+ QModelIndex TabBoxHandler::nextPrev(bool forward) const
+ {
+     QModelIndex ret;
+     QAbstractItemModel *model = d->clientModel();
++    if (config().clientSwitchingMode() == TabBoxConfig::TaskbarOrderSwitching) {
++        if (model->rowCount() == 0) {
++            return QModelIndex();
++        }
++        if (!d->index.isValid()) {
++            return model->index(forward ? 0 : model->rowCount() - 1, 0);
++        }
++        const int row = d->index.row() + (forward ? 1 : -1);
++        return row >= 0 && row < model->rowCount() ? model->index(row, 0) : d->index;
++    }
+     if (forward) {
+         int column = d->index.column() + 1;
+         int row = d->index.row();
+@@ -373,7 +388,7 @@
+     if (d->index == index) {
+         return;
+     }
+-    if (!index.isValid()) {
++    if (!index.isValid() && config().clientSwitchingMode() != TabBoxConfig::TaskbarOrderSwitching) {
+         return;
+     }
+     d->index = index;
+--- a/src/tabbox/clientmodel.cpp
++++ b/src/tabbox/clientmodel.cpp
+@@ -217,16 +217,25 @@
+         createStackingOrderClientList(start);
+         break;
+     }
++    case TabBoxConfig::TaskbarOrderSwitching:
++        for (Window *window : tabBox->taskbarOrder()) {
++            Window *eligible = tabBox->clientToAddToList(window);
++            if (eligible == window && !m_mutableClientList.contains(window)) {
++                m_mutableClientList.append(eligible);
++            }
++        }
++        break;
+     }
+ 
+-    if (tabBox->config().orderMinimizedMode() == TabBoxConfig::GroupByMinimized) {
++    const bool taskbarOrder = tabBox->config().clientSwitchingMode() == TabBoxConfig::TaskbarOrderSwitching;
++    if (!taskbarOrder && tabBox->config().orderMinimizedMode() == TabBoxConfig::GroupByMinimized) {
+         // Put all non-minimized included clients first.
+         std::stable_partition(m_mutableClientList.begin(), m_mutableClientList.end(), [](const auto &client) {
+             return !client->isMinimized();
+         });
+     }
+ 
+-    if (!m_mutableClientList.isEmpty()
++    if (!taskbarOrder && !m_mutableClientList.isEmpty()
+         && tabBox->config().clientApplicationsMode() != TabBoxConfig::AllWindowsCurrentApplication
+         && tabBox->config().showDesktopMode() == TabBoxConfig::ShowDesktopClient) {
+         Window *desktopClient = tabBox->desktopClient();
+--- a/src/kcms/tabbox/main.ui
++++ b/src/kcms/tabbox/main.ui
+@@ -60,6 +60,11 @@
+             <string>Stacking order</string>
+            </property>
+           </item>
++          <item>
++           <property name="text">
++            <string>Taskbar order (no wrapping)</string>
++           </property>
++          </item>
+          </widget>
+         </item>
+         <item row="3" column="0" colspan="3">
+--- a/autotests/integration/tabbox_test.cpp
++++ b/autotests/integration/tabbox_test.cpp
+@@ -9,15 +9,27 @@
+ #include "kwin_wayland_test.h"
+ 
+ #include "core/outputbackend.h"
++#include "dbusinterface.h"
+ #include "input.h"
+ #include "pointer_input.h"
+ #include "tabbox/tabbox.h"
++#include "virtualdesktops.h"
+ #include "wayland_server.h"
+ #include "window.h"
+ #include "workspace.h"
+ 
+ #include <KConfigGroup>
+ #include <KWayland/Client/surface.h>
++#include <KGlobalAccel>
++
++#include <QAction>
++#include <QDBusConnection>
++#include <QDBusMessage>
++#include <QDBusPendingCallWatcher>
++#include <QDBusServiceWatcher>
++#include <QQuickWindow>
++
++#include <vector>
+ 
+ #include <linux/input.h>
+ 
+@@ -41,6 +53,23 @@
+     void testActiveClientOutsideModel();
+     void testScrollAccumulates();
+     void testScrollDoesNotAccumulateAcrossDirectionChanges();
++    void testTaskbarNavigation();
++    void testTaskbarUpdates();
++    void testTaskbarProviders();
++    void testTaskbarDesktopFilter();
++    void testTaskbarDefaultMode();
++
++private:
++    Window *createTaskbarWindow();
++    bool taskbarCall(const QString &method, uint sourceId, const QStringList &ids = {});
++    void tap(uint key);
++    struct TaskbarWindow {
++        std::unique_ptr<KWayland::Client::Surface> surface;
++        std::unique_ptr<Test::XdgToplevel> shell;
++        Window *window;
++    };
++    std::vector<TaskbarWindow> m_taskbarWindows;
++    quint32 m_timestamp = 0;
+ };
+ 
+ void TabBoxTest::initTestCase()
+@@ -50,6 +79,11 @@
+ 
+     KSharedConfigPtr c = KSharedConfig::openConfig(QString(), KConfig::SimpleConfig);
+     c->group(QStringLiteral("TabBox")).writeEntry("ShowTabBox", false);
++    auto alternative = c->group(QStringLiteral("TabBoxAlternative"));
++    alternative.writeEntry("SwitchingMode", 2);
++    alternative.writeEntry("ShowTabBox", false);
++    alternative.writeEntry("HighlightWindows", false);
++    alternative.writeEntry("LayoutName", QStringLiteral("thumbnail_grid"));
+     c->sync();
+     kwinApp()->setConfig(c);
+     qputenv("KWIN_XKB_DEFAULT_KEYMAP", "1");
+@@ -59,6 +93,18 @@
+         Rect(0, 0, 1280, 1024),
+         Rect(1280, 0, 1280, 1024),
+     });
++
++    // The test application doesn't export the main application's D-Bus object.
++    // Use the real interface and its generated adaptor, not a test replacement.
++    new DBusInterface(this);
++#if KWIN_BUILD_GLOBALSHORTCUTS
++    const auto bind = [](const QString &name, QKeySequence sequence) {
++        auto action = workspace()->tabbox()->findChild<QAction *>(name);
++        return action && KGlobalAccel::self()->setShortcut(action, {sequence}, KGlobalAccel::NoAutoloading);
++    };
++    QVERIFY(bind(QStringLiteral("Walk Through Windows Alternative"), QKeySequence(Qt::META | Qt::Key_L)));
++    QVERIFY(bind(QStringLiteral("Walk Through Windows Alternative (Reverse)"), QKeySequence(Qt::META | Qt::Key_H)));
++#endif
+ }
+ 
+ void TabBoxTest::init()
+@@ -70,6 +116,28 @@
+ 
+ void TabBoxTest::cleanup()
+ {
++    if (workspace()->tabbox()->isGrabbed()) {
++        workspace()->tabbox()->close(true);
++    }
++    if (input()->keyboardModifiers().testFlag(Qt::MetaModifier)) {
++        Test::keyboardKeyReleased(KEY_LEFTMETA, m_timestamp++);
++    }
++    for (auto &entry : m_taskbarWindows) {
++        if (entry.window) {
++            entry.shell.reset();
++            entry.surface.reset();
++            QVERIFY(Test::waitForWindowClosed(entry.window));
++        }
++    }
++    m_taskbarWindows.clear();
++    QVERIFY(taskbarCall(QStringLiteral("removeTaskbarWindowOrder"), 7));
++    QVERIFY(taskbarCall(QStringLiteral("removeTaskbarWindowOrder"), 19));
++    auto alternative = kwinApp()->config()->group(QStringLiteral("TabBoxAlternative"));
++    alternative.writeEntry("ShowTabBox", false);
++    alternative.writeEntry("DesktopMode", 1);
++    alternative.sync();
++    workspace()->slotReconfigure();
++    VirtualDesktopManager::self()->setCount(1);
+     Test::destroyWaylandConnection();
+ }
+ 
+@@ -734,5 +802,286 @@
+     QVERIFY(Test::waitForWindowClosed(c1));
+ }
+ 
++Window *TabBoxTest::createTaskbarWindow()
++{
++    TaskbarWindow entry;
++    entry.surface.reset(Test::createSurface());
++    entry.shell.reset(Test::createXdgToplevelSurface(entry.surface.get()));
++    entry.window = Test::renderAndWaitForShown(entry.surface.get(), QSize(120, 80), Qt::blue);
++    Window *window = entry.window;
++    m_taskbarWindows.push_back(std::move(entry));
++    return window;
++}
++
++bool TabBoxTest::taskbarCall(const QString &method, uint sourceId, const QStringList &ids)
++{
++    auto message = QDBusMessage::createMethodCall(QStringLiteral("org.kde.KWin"), QStringLiteral("/KWin"),
++                                                 QStringLiteral("org.kde.KWin"), method);
++    message << sourceId;
++    if (method == QLatin1String("setTaskbarWindowOrder")) {
++        message << ids;
++    }
++    QDBusPendingCallWatcher watcher(QDBusConnection::sessionBus().asyncCall(message));
++    QSignalSpy finished(&watcher, &QDBusPendingCallWatcher::finished);
++    if (!watcher.isFinished() && !finished.wait()) {
++        return false;
++    }
++    if (watcher.isError()) {
++        qWarning() << watcher.error();
++        return false;
++    }
++    return true;
++}
++
++void TabBoxTest::tap(uint key)
++{
++    Test::keyboardKeyPressed(key, m_timestamp++);
++    Test::keyboardKeyReleased(key, m_timestamp++);
++}
++
++void TabBoxTest::testTaskbarNavigation()
++{
++#if !KWIN_BUILD_GLOBALSHORTCUTS
++    QSKIP("Can't test shortcuts without shortcuts");
++#endif
++    auto c1 = createTaskbarWindow();
++    auto c2 = createTaskbarWindow();
++    auto c3 = createTaskbarWindow();
++    QVERIFY(c1 && c2 && c3);
++    auto box = workspace()->tabbox();
++    const QStringList order{c1->internalId().toString(), c2->internalId().toString(), c3->internalId().toString()};
++    QVERIFY(taskbarCall(QStringLiteral("setTaskbarWindowOrder"), 7, order));
++    // Deliberately make MRU differ from the published order.
++    workspace()->activateWindow(c2);
++    workspace()->activateWindow(c1);
++    auto alternative = kwinApp()->config()->group(QStringLiteral("TabBoxAlternative"));
++    alternative.writeEntry("ShowTabBox", true);
++    alternative.sync();
++    workspace()->slotReconfigure();
++
++    Test::keyboardKeyPressed(KEY_LEFTMETA, m_timestamp++);
++    tap(KEY_L);
++    QTRY_VERIFY(box->isGrabbed());
++    QTRY_VERIFY(box->isShown());
++    QCOMPARE(box->currentClientList(), QList<Window *>({c1, c2, c3}));
++    QCOMPARE(box->currentClient(), c2);
++    const auto visibleSwitcher = []() -> QQuickWindow * {
++        for (QWindow *window : QGuiApplication::allWindows()) {
++            if (auto quick = qobject_cast<QQuickWindow *>(window); quick && quick->isVisible() && quick->isExposed()) {
++                return quick;
++            }
++        }
++        return nullptr;
++    };
++    QTRY_VERIFY2(visibleSwitcher(), "The native thumbnail_grid QML switcher must create an exposed QQuickWindow");
++    QPointer<QQuickWindow> preview = visibleSwitcher();
++    QVERIFY(preview->width() > 0 && preview->height() > 0);
++    QCOMPARE(workspace()->activeWindow(), c1); // Holding Win only previews.
++    tap(KEY_L);
++    QCOMPARE(box->currentClient(), c3);
++    tap(KEY_L);
++    tap(KEY_L); // Separate presses, not merely auto-repeat, must stay bounded.
++    QCOMPARE(box->currentClient(), c3);
++    tap(KEY_H);
++    QCOMPARE(box->currentClient(), c2);
++    tap(KEY_H);
++    tap(KEY_H);
++    QCOMPARE(box->currentClient(), c1);
++    tap(KEY_L);
++    Test::keyboardKeyReleased(KEY_LEFTMETA, m_timestamp++);
++    QTRY_VERIFY(!box->isGrabbed());
++    QCOMPARE(workspace()->activeWindow(), c2);
++    QTRY_VERIFY(!preview || !preview->isVisible());
++
++    Test::keyboardKeyPressed(KEY_LEFTMETA, m_timestamp++);
++    tap(KEY_L);
++    QTRY_VERIFY(box->isGrabbed());
++    QCOMPARE(box->currentClient(), c3);
++    tap(KEY_ESC);
++    QVERIFY(!box->isGrabbed());
++    Test::keyboardKeyReleased(KEY_LEFTMETA, m_timestamp++);
++    QCOMPARE(workspace()->activeWindow(), c2);
++}
++
++void TabBoxTest::testTaskbarUpdates()
++{
++#if !KWIN_BUILD_GLOBALSHORTCUTS
++    QSKIP("Can't test shortcuts without shortcuts");
++#endif
++    auto c1 = createTaskbarWindow();
++    auto c2 = createTaskbarWindow();
++    auto c3 = createTaskbarWindow();
++    QVERIFY(c1 && c2 && c3);
++    const QString id1 = c1->internalId().toString();
++    const QString id2 = c2->internalId().toString();
++    const QString id3 = c3->internalId().toString();
++    auto box = workspace()->tabbox();
++    QVERIFY(taskbarCall(QStringLiteral("setTaskbarWindowOrder"), 7, {id1, id2, id3}));
++    workspace()->activateWindow(c1);
++    Test::keyboardKeyPressed(KEY_LEFTMETA, m_timestamp++);
++    tap(KEY_L);
++    QTRY_VERIFY(box->isGrabbed());
++    QCOMPARE(box->currentClient(), c2);
++    QVERIFY(taskbarCall(QStringLiteral("setTaskbarWindowOrder"), 7, {id3, id1, id2}));
++    QCOMPARE(box->currentClientList(), QList<Window *>({c3, c1, c2}));
++    QCOMPARE(box->currentClient(), c2); // Preserve identity, not the old row.
++    tap(KEY_L);
++    QCOMPARE(box->currentClient(), c2);
++    QVERIFY(taskbarCall(QStringLiteral("setTaskbarWindowOrder"), 7, {id3, id1}));
++    QCOMPARE(box->currentClient(), c1); // Removed selection clamps to a live row.
++    m_taskbarWindows[0].shell.reset();
++    m_taskbarWindows[0].surface.reset();
++    QVERIFY(Test::waitForWindowClosed(c1));
++    m_taskbarWindows[0].window = nullptr;
++    QTRY_COMPARE(box->currentClientList(), QList<Window *>({c3}));
++    QCOMPARE(box->currentClient(), c3);
++    // A subsequent snapshot with the closed UUID cannot resurrect it.
++    QVERIFY(taskbarCall(QStringLiteral("setTaskbarWindowOrder"), 7, {id1, id2, id3}));
++    QCOMPARE(box->currentClientList(), QList<Window *>({c2, c3}));
++    QCOMPARE(box->currentClient(), c3);
++    QVERIFY(taskbarCall(QStringLiteral("setTaskbarWindowOrder"), 7, {}));
++    QVERIFY(box->currentClientList().isEmpty());
++    QVERIFY(!box->currentClient());
++    Test::keyboardKeyReleased(KEY_LEFTMETA, m_timestamp++);
++    QVERIFY(!box->isGrabbed());
++    QVERIFY(workspace()->activeWindow() != c1);
++}
++
++void TabBoxTest::testTaskbarProviders()
++{
++#if !KWIN_BUILD_GLOBALSHORTCUTS
++    QSKIP("Can't test shortcuts without shortcuts");
++#endif
++    auto c1 = createTaskbarWindow();
++    auto c2 = createTaskbarWindow();
++    auto c3 = createTaskbarWindow();
++    QVERIFY(c1 && c2 && c3);
++    const QString id1 = c1->internalId().toString();
++    const QString id2 = c2->internalId().toString();
++    const QString id3 = c3->internalId().toString();
++    auto box = workspace()->tabbox();
++    // Start without a publisher: creation order is stable even after refocusing.
++    workspace()->activateWindow(c2);
++    workspace()->activateWindow(c1);
++    Test::keyboardKeyPressed(KEY_LEFTMETA, m_timestamp++);
++    tap(KEY_L);
++    QTRY_VERIFY(box->isGrabbed());
++    QCOMPARE(box->currentClientList(), QList<Window *>({c1, c2, c3}));
++    QCOMPARE(box->currentClient(), c2);
++    tap(KEY_ESC);
++    Test::keyboardKeyReleased(KEY_LEFTMETA, m_timestamp++);
++
++    QDBusServiceWatcher serviceWatcher(QStringLiteral("org.kde.plasmashell"), QDBusConnection::sessionBus(),
++                                       QDBusServiceWatcher::WatchForOwnerChange);
++    QSignalSpy ownerChanged(&serviceWatcher, &QDBusServiceWatcher::serviceOwnerChanged);
++    auto publisher = QDBusConnection::connectToBus(QDBusConnection::SessionBus, QStringLiteral("taskbar-publisher"));
++    QVERIFY(publisher.registerService(QStringLiteral("org.kde.plasmashell")));
++    QTRY_COMPARE(ownerChanged.count(), 1);
++    c2->setSkipSwitcher(true);
++    QVERIFY(taskbarCall(QStringLiteral("setTaskbarWindowOrder"), 19, {id3}));
++    QVERIFY(taskbarCall(QStringLiteral("setTaskbarWindowOrder"), 7,
++                        {QStringLiteral("invalid"), QUuid::createUuid().toString(), id2, id1, c1->internalId().toString(QUuid::WithoutBraces), id1}));
++    Test::keyboardKeyPressed(KEY_LEFTMETA, m_timestamp++);
++    tap(KEY_L);
++    QTRY_VERIFY(box->isGrabbed());
++    QCOMPARE(box->currentClientList(), QList<Window *>({c1}));
++    QCOMPARE(box->currentClient(), c1);
++    QVERIFY(taskbarCall(QStringLiteral("setTaskbarWindowOrder"), 7, {}));
++    QVERIFY(box->currentClientList().isEmpty()); // Lowest source's empty list wins.
++    QVERIFY(!box->currentClient());
++    QVERIFY(taskbarCall(QStringLiteral("removeTaskbarWindowOrder"), 7));
++    QCOMPARE(box->currentClientList(), QList<Window *>({c3}));
++    QCOMPARE(box->currentClient(), c3);
++    c2->setSkipSwitcher(false);
++    QVERIFY(publisher.unregisterService(QStringLiteral("org.kde.plasmashell")));
++    QTRY_COMPARE(ownerChanged.count(), 2);
++    QTRY_COMPARE(box->currentClientList(), QList<Window *>({c1, c2, c3}));
++    QCOMPARE(box->currentClient(), c3);
++    QDBusConnection::disconnectFromBus(QStringLiteral("taskbar-publisher"));
++    tap(KEY_ESC);
++    Test::keyboardKeyReleased(KEY_LEFTMETA, m_timestamp++);
++
++    // When active isn't published, entry chooses the edge in either direction.
++    QVERIFY(taskbarCall(QStringLiteral("setTaskbarWindowOrder"), 7, {id2, id3}));
++    for (const auto &[key, expected] : {std::pair<uint, Window *>(KEY_L, c2), {KEY_H, c3}}) {
++        workspace()->activateWindow(c1);
++        Test::keyboardKeyPressed(KEY_LEFTMETA, m_timestamp++);
++        tap(key);
++        QTRY_VERIFY(box->isGrabbed());
++        QCOMPARE(box->currentClient(), expected);
++        Test::keyboardKeyReleased(KEY_LEFTMETA, m_timestamp++);
++        QCOMPARE(workspace()->activeWindow(), expected);
++    }
++}
++
++void TabBoxTest::testTaskbarDesktopFilter()
++{
++#if !KWIN_BUILD_GLOBALSHORTCUTS
++    QSKIP("Can't test shortcuts without shortcuts");
++#endif
++    auto c1 = createTaskbarWindow();
++    auto c2 = createTaskbarWindow();
++    auto c3 = createTaskbarWindow();
++    QVERIFY(c1 && c2 && c3);
++    auto desktops = VirtualDesktopManager::self();
++    desktops->setCount(2);
++    c3->setDesktops({desktops->desktops().at(1)});
++    auto alternative = kwinApp()->config()->group(QStringLiteral("TabBoxAlternative"));
++    alternative.writeEntry("DesktopMode", 1); // OnlyCurrentDesktopClients
++    alternative.sync();
++    workspace()->slotReconfigure();
++    QVERIFY(taskbarCall(QStringLiteral("setTaskbarWindowOrder"), 7,
++                        {c1->internalId().toString(), c2->internalId().toString(), c3->internalId().toString()}));
++    workspace()->activateWindow(c1);
++    auto box = workspace()->tabbox();
++    Test::keyboardKeyPressed(KEY_LEFTMETA, m_timestamp++);
++    tap(KEY_L);
++    QTRY_VERIFY(box->isGrabbed());
++    QCOMPARE(box->currentClientList(), QList<Window *>({c1, c2}));
++    QCOMPARE(box->currentClient(), c2);
++    desktops->setCurrent(2);
++    QTRY_COMPARE(box->currentClientList(), QList<Window *>({c3}));
++    QCOMPARE(box->currentClient(), c3);
++    // Simulate the filtered TasksModel publication arriving after desktop change.
++    QVERIFY(taskbarCall(QStringLiteral("setTaskbarWindowOrder"), 7, {c3->internalId().toString()}));
++    QCOMPARE(box->currentClient(), c3);
++    Test::keyboardKeyReleased(KEY_LEFTMETA, m_timestamp++);
++    QCOMPARE(workspace()->activeWindow(), c3);
++}
++
++void TabBoxTest::testTaskbarDefaultMode()
++{
++#if !KWIN_BUILD_GLOBALSHORTCUTS
++    QSKIP("Can't test shortcuts without shortcuts");
++#endif
++    auto c1 = createTaskbarWindow();
++    auto c2 = createTaskbarWindow();
++    auto c3 = createTaskbarWindow();
++    QVERIFY(c1 && c2 && c3);
++    QVERIFY(taskbarCall(QStringLiteral("setTaskbarWindowOrder"), 7,
++                        {c1->internalId().toString(), c2->internalId().toString(), c3->internalId().toString()}));
++    workspace()->activateWindow(c2);
++    workspace()->activateWindow(c1);
++    auto box = workspace()->tabbox();
++    Test::keyboardKeyPressed(KEY_LEFTALT, m_timestamp++);
++    tap(KEY_TAB);
++    QTRY_VERIFY(box->isGrabbed());
++    QCOMPARE(box->currentClientList(), QList<Window *>({c1, c2, c3}));
++    QCOMPARE(box->currentClient(), c2);
++    tap(KEY_TAB);
++    QCOMPARE(box->currentClient(), c3);
++    tap(KEY_TAB);
++    QCOMPARE(box->currentClient(), c1); // Ordinary Alt+Tab still wraps.
++    Test::keyboardKeyReleased(KEY_LEFTALT, m_timestamp++);
++    QCOMPARE(workspace()->activeWindow(), c1);
++    workspace()->activateWindow(c3);
++    Test::keyboardKeyPressed(KEY_LEFTALT, m_timestamp++);
++    tap(KEY_TAB);
++    QTRY_VERIFY(box->isGrabbed());
++    QCOMPARE(box->currentClient(), c1); // MRU, not the preceding taskbar entry.
++    Test::keyboardKeyReleased(KEY_LEFTALT, m_timestamp++);
++    QCOMPARE(workspace()->activeWindow(), c1);
++}
++
+ WAYLANDTEST_MAIN(TabBoxTest)
+ #include "tabbox_test.moc"
