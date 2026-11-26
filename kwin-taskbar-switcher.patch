@@ -498,7 +498,7 @@
 +            return false;
 +        }
 +        // Direct registration does not emit the external-change notification.
-+        Q_EMIT KGlobalAccel::self()->globalShortcutChanged(action);
++        Q_EMIT KGlobalAccel::self()->globalShortcutChanged(action, sequence);
 +        return true;
 +    };
 +    QVERIFY(bind(QStringLiteral("Walk Through Windows Alternative"), QKeySequence(Qt::META | Qt::Key_L)));
