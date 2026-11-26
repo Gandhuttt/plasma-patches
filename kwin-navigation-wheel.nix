@@ -8,8 +8,8 @@
         kwin = kprevious.kwin.overrideAttrs (old: {
           # [TabBoxAlternative] SwitchingMode=2 uses live taskbar UUID order and
           # bounded navigation. Bind Walk Through Windows Alternative/Reverse
-          # to Meta+L/Meta+H for native previews and modifier-release activation.
-          # Normal [TabBox] switching is unchanged.
+          # to Meta+L/Meta+H: each selection focuses immediately, and Escape
+          # restores the original window. Normal [TabBox] switching is unchanged.
           outputs = old.outputs ++ [ "tests" ];
           patches = (old.patches or [ ]) ++ [
             ./kwin-navigation-wheel.patch

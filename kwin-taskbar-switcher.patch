@@ -80,18 +80,19 @@
          <arg type="s" direction="out"/>
 --- a/src/tabbox/tabbox.h
 +++ b/src/tabbox/tabbox.h
-@@ -16,7 +16,10 @@
+@@ -16,7 +16,11 @@
  
  #include <QKeySequence>
  #include <QModelIndex>
 +#include <QMap>
++#include <QPointer>
 +#include <QStringList>
  #include <QTimer>
 +#include <QUuid>
  
  class KConfigGroup;
  class KLazyLocalizedString;
-@@ -56,6 +59,7 @@
+@@ -56,6 +60,7 @@
      bool isInFocusChain(Window *client) const override;
      QList<Window *> stackingOrder() const override;
      void raiseClient(Window *client) const override;
@@ -99,7 +100,7 @@
      Window *clientToAddToList(Window *client) const override;
      Window *desktopClient() const override;
      void activateAndClose() override;
-@@ -98,6 +102,10 @@
+@@ -98,6 +103,10 @@
       */
      void setCurrentClient(Window *newClient);
  
@@ -110,7 +111,7 @@
      /**
       * Return whether the active client is present in the client list.
       */
-@@ -251,6 +259,7 @@
+@@ -251,6 +260,7 @@
      void handleWindowAdded(Window *window);
      void handleWindowRemoved(Window *window);
      void handleWindowClosed(Window *window);
@@ -118,10 +119,11 @@
  
      bool startKDEWalkThroughWindows(bool forward, TabBoxMode mode); // TabBoxWindowsMode | TabBoxWindowsAlternativeMode
      void navigatingThroughWindows(bool forward, const QList<QKeySequence> &shortcut, TabBoxMode mode); // TabBoxWindowsMode | TabBoxWindowsAlternativeMode
-@@ -274,6 +283,7 @@
+@@ -274,6 +284,8 @@
  private:
      TabBoxMode m_tabBoxMode;
      TabBoxHandlerImpl *m_tabBox;
++    QPointer<Window> m_taskbarOriginalWindow;
 +    QMap<uint, QList<QUuid>> m_taskbarWindowOrders;
      int m_delayShowTime;
  
@@ -171,10 +173,15 @@
      Workspace::self()->forEachWindow([this](Window *window) {
          watchWindow(window);
      });
-@@ -388,8 +404,79 @@
+@@ -386,10 +402,84 @@
+         m_tabBox->setConfig(m_alternativeCurrentApplicationConfig);
+         break;
      }
- }
- 
++    m_taskbarOriginalWindow = m_tabGrab && m_tabBox->config().clientSwitchingMode() == TabBoxConfig::TaskbarOrderSwitching
++        ? workspace()->activeWindow()
++        : nullptr;
++}
++
 +void TabBox::setTaskbarWindowOrder(uint sourceId, const QStringList &windowIds)
 +{
 +    QList<QUuid> order;
@@ -225,8 +232,8 @@
 +    if (isGrabbed() && m_tabBox->config().clientSwitchingMode() == TabBoxConfig::TaskbarOrderSwitching) {
 +        reset(true);
 +    }
-+}
-+
+ }
+ 
  void TabBox::reset(bool partial_reset)
  {
 +    if (m_tabBox->config().clientSwitchingMode() == TabBoxConfig::TaskbarOrderSwitching) {
@@ -251,7 +258,7 @@
      m_tabBox->createModel(partial_reset);
      if (!partial_reset) {
          const QModelIndex activeIndex = m_tabBox->index(workspace()->activeWindow());
-@@ -412,14 +499,20 @@
+@@ -412,14 +502,20 @@
      connect(window, &Window::closed, this, [this, window]() {
          handleWindowClosed(window);
      });
@@ -273,7 +280,7 @@
      reset(true);
  }
  
-@@ -430,6 +523,10 @@
+@@ -430,6 +526,10 @@
  
  void TabBox::handleWindowClosed(Window *window)
  {
@@ -284,7 +291,19 @@
      if (isDisplayed() && currentClient() == window) {
          nextPrev(true);
      }
-@@ -465,7 +562,7 @@
+@@ -438,6 +538,11 @@
+ void TabBox::nextPrev(bool next)
+ {
+     setCurrentIndex(m_tabBox->nextPrev(next), false);
++    if (m_tabGrab && m_tabBox->config().clientSwitchingMode() == TabBoxConfig::TaskbarOrderSwitching) {
++        if (Window *selected = currentClient(); selected && selected != workspace()->activeWindow()) {
++            workspace()->activateWindow(selected);
++        }
++    }
+     Q_EMIT tabBoxUpdated();
+ }
+ 
+@@ -465,7 +570,7 @@
  
  void TabBox::setCurrentIndex(QModelIndex index, bool notifyEffects)
  {
@@ -293,7 +312,7 @@
          return;
      }
      m_tabBox->setCurrentIndex(index);
-@@ -827,7 +924,7 @@
+@@ -827,7 +932,7 @@
      setMode(mode);
      reset();
  
@@ -302,7 +321,7 @@
          nextPrev(forward);
      }
  
-@@ -900,7 +997,7 @@
+@@ -900,7 +1005,7 @@
      setMode(mode);
      reset();
  
@@ -311,6 +330,17 @@
          nextPrev(forward);
      }
  
+@@ -1031,6 +1136,10 @@
+     hide(abort);
+     m_tabGrab = false;
+     m_noModifierGrab = false;
++    if (abort && m_taskbarOriginalWindow && !m_taskbarOriginalWindow->isDeleted() && workspace()->hasWindow(m_taskbarOriginalWindow)) {
++        workspace()->activateWindow(m_taskbarOriginalWindow);
++    }
++    m_taskbarOriginalWindow.clear();
+ 
+     input()->keyboard()->update();
+     input()->pointer()->setEnableConstraints(true);
 --- a/src/tabbox/tabboxconfig.h
 +++ b/src/tabbox/tabboxconfig.h
 @@ -108,6 +108,7 @@
@@ -536,7 +566,7 @@
      Test::destroyWaylandConnection();
  }
  
-@@ -734,5 +809,322 @@
+@@ -734,5 +809,327 @@
      QVERIFY(Test::waitForWindowClosed(c1));
  }
  
@@ -614,17 +644,21 @@
 +    QTRY_VERIFY2(visibleSwitcher(), "The native thumbnail_grid QML switcher must create an exposed QQuickWindow");
 +    QPointer<QQuickWindow> preview = visibleSwitcher();
 +    QVERIFY(preview->width() > 0 && preview->height() > 0);
-+    QCOMPARE(workspace()->activeWindow(), c1); // Holding Win only previews.
++    QCOMPARE(workspace()->activeWindow(), c2); // Selection focuses while Win is held.
 +    tap(KEY_L);
 +    QCOMPARE(box->currentClient(), c3);
++    QCOMPARE(workspace()->activeWindow(), c3);
 +    tap(KEY_L);
 +    tap(KEY_L); // Separate presses, not merely auto-repeat, must stay bounded.
 +    QCOMPARE(box->currentClient(), c3);
++    QCOMPARE(workspace()->activeWindow(), c3);
 +    tap(KEY_H);
 +    QCOMPARE(box->currentClient(), c2);
++    QCOMPARE(workspace()->activeWindow(), c2);
 +    tap(KEY_H);
 +    tap(KEY_H);
 +    QCOMPARE(box->currentClient(), c1);
++    QCOMPARE(workspace()->activeWindow(), c1);
 +    tap(KEY_L);
 +    Test::keyboardKeyReleased(KEY_LEFTMETA, m_timestamp++);
 +    QTRY_VERIFY(!box->isGrabbed());
@@ -635,6 +669,7 @@
 +    tap(KEY_L);
 +    QTRY_VERIFY(box->isGrabbed());
 +    QCOMPARE(box->currentClient(), c3);
++    QCOMPARE(workspace()->activeWindow(), c3);
 +    tap(KEY_ESC);
 +    QVERIFY(!box->isGrabbed());
 +    Test::keyboardKeyReleased(KEY_LEFTMETA, m_timestamp++);
