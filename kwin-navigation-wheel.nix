@@ -10,6 +10,7 @@
           # bounded navigation. Bind Walk Through Windows Alternative/Reverse
           # to Meta+L/Meta+H for native previews and modifier-release activation.
           # Normal [TabBox] switching is unchanged.
+          outputs = old.outputs ++ [ "tests" ];
           patches = (old.patches or [ ]) ++ [
             ./kwin-navigation-wheel.patch
             ./kwin-navigation-wheel-tests.patch
@@ -29,39 +30,13 @@
           postBuild = (old.postBuild or "") + ''
             cmake --build . --target testGlobalShortcuts testTabBox --parallel "$NIX_BUILD_CORES"
           '';
-          doCheck = true;
-          checkPhase = ''
-            runHook preCheck
-            export XDG_RUNTIME_DIR="$TMPDIR/kwin-navigation-runtime"
-            mkdir -m 700 "$XDG_RUNTIME_DIR"
-            # Real native previews need KWin's EGL compositor, not just a
-            # software Qt Quick backend. CI binds a readable /dev/udmabuf.
-            export __EGL_VENDOR_LIBRARY_FILENAMES=${previous.mesa}/share/glvnd/egl_vendor.d/50_mesa.json
-            export LIBGL_ALWAYS_SOFTWARE=1
-            export FONTCONFIG_FILE=${previous.makeFontsConf { fontDirectories = [ previous.dejavu_fonts ]; }}
-            # Separate compositor processes test opted-in and absent-option paths.
-            # KWin initializes its linked KGlobalAccelD on this private bus; do not
-            # launch an external daemon. WAYLANDTEST_MAIN selects KWin's own QPA.
-            KWIN_TEST_NAVIGATION_GESTURES=1 \
-              dbus-run-session --config-file=${previous.dbus}/share/dbus-1/session.conf \
-              ./bin/testGlobalShortcuts testNavigationWheel testNavigationGestures \
-                testNavigationGestureBoundaries testDefaultTouchpadGestures
-            KWIN_TEST_NAVIGATION_GESTURES=0 \
-              dbus-run-session --config-file=${previous.dbus}/share/dbus-1/session.conf \
-              ./bin/testGlobalShortcuts testNavigationWheel testDefaultTouchpadGestures
-            mkdir -p "$TMPDIR/kwin-tabbox-data/kwin/tabbox"
-            ln -s "$PWD/../src/tabbox/switchers/thumbnail_grid" \
-              "$TMPDIR/kwin-tabbox-data/kwin/tabbox/thumbnail_grid"
-            XDG_DATA_DIRS="$TMPDIR/kwin-tabbox-data''${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}" \
-              QT_PLUGIN_PATH="$PWD/bin''${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}" \
-              QML_IMPORT_PATH="$PWD/bin''${QML_IMPORT_PATH:+:$QML_IMPORT_PATH}" \
-              QSG_RHI_BACKEND=opengl \
-              dbus-run-session --config-file=${previous.dbus}/share/dbus-1/session.conf \
-              gdb --batch --return-child-result -ex run -ex "thread apply all bt" \
-              --args ./bin/testTabBox testTaskbarNavigation testTaskbarUpdates \
-                testTaskbarProviders testTaskbarDesktopFilter testTaskbarDefaultMode \
-                testMoveForward testMoveBackward
-            runHook postCheck
+          # GitHub's hosted kernel lacks udmabuf. Run these real compositor
+          # integration tests separately on a machine with a render device.
+          doCheck = false;
+          postInstall = (old.postInstall or "") + ''
+            mkdir -p "$tests/bin" "$tests/share/kwin/tabbox"
+            cp bin/testGlobalShortcuts bin/testTabBox "$tests/bin/"
+            cp -r ../src/tabbox/switchers/thumbnail_grid "$tests/share/kwin/tabbox/"
           '';
         });
       });
