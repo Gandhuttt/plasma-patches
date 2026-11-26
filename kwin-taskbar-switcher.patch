@@ -171,7 +171,7 @@
      Workspace::self()->forEachWindow([this](Window *window) {
          watchWindow(window);
      });
-@@ -388,8 +404,80 @@
+@@ -388,8 +404,79 @@
      }
  }
  
@@ -184,10 +184,9 @@
 +        if (uuid.isNull() || order.contains(uuid)) {
 +            continue;
 +        }
-+        Window *window = workspace()->findWindow(uuid);
-+        if (window && !window->isDeleted() && window->isClient()) {
-+            order.append(uuid);
-+        }
++        // Plasma can publish a window before it has its first buffer and
++        // appears in Workspace. Resolve IDs when building the switcher.
++        order.append(uuid);
 +    }
 +    // An empty snapshot is authoritative, unlike the absence of a publisher.
 +    m_taskbarWindowOrders.insert(sourceId, order);
@@ -252,7 +251,7 @@
      m_tabBox->createModel(partial_reset);
      if (!partial_reset) {
          const QModelIndex activeIndex = m_tabBox->index(workspace()->activeWindow());
-@@ -412,14 +500,20 @@
+@@ -412,14 +499,20 @@
      connect(window, &Window::closed, this, [this, window]() {
          handleWindowClosed(window);
      });
@@ -274,7 +273,7 @@
      reset(true);
  }
  
-@@ -430,6 +524,10 @@
+@@ -430,6 +523,10 @@
  
  void TabBox::handleWindowClosed(Window *window)
  {
@@ -285,7 +284,7 @@
      if (isDisplayed() && currentClient() == window) {
          nextPrev(true);
      }
-@@ -465,7 +563,7 @@
+@@ -465,7 +562,7 @@
  
  void TabBox::setCurrentIndex(QModelIndex index, bool notifyEffects)
  {
@@ -294,7 +293,7 @@
          return;
      }
      m_tabBox->setCurrentIndex(index);
-@@ -827,7 +925,7 @@
+@@ -827,7 +924,7 @@
      setMode(mode);
      reset();
  
@@ -303,7 +302,7 @@
          nextPrev(forward);
      }
  
-@@ -900,7 +998,7 @@
+@@ -900,7 +997,7 @@
      setMode(mode);
      reset();
  
@@ -446,11 +445,12 @@
  
  #include <linux/input.h>
  
-@@ -41,6 +53,23 @@
+@@ -41,6 +53,24 @@
      void testActiveClientOutsideModel();
      void testScrollAccumulates();
      void testScrollDoesNotAccumulateAcrossDirectionChanges();
 +    void testTaskbarNavigation();
++    void testTaskbarWindowPublishedBeforeMapping();
 +    void testTaskbarUpdates();
 +    void testTaskbarProviders();
 +    void testTaskbarDesktopFilter();
@@ -470,7 +470,7 @@
  };
  
  void TabBoxTest::initTestCase()
-@@ -50,6 +79,11 @@
+@@ -50,6 +80,11 @@
  
      KSharedConfigPtr c = KSharedConfig::openConfig(QString(), KConfig::SimpleConfig);
      c->group(QStringLiteral("TabBox")).writeEntry("ShowTabBox", false);
@@ -482,7 +482,7 @@
      c->sync();
      kwinApp()->setConfig(c);
      qputenv("KWIN_XKB_DEFAULT_KEYMAP", "1");
-@@ -59,6 +93,24 @@
+@@ -59,6 +94,24 @@
          Rect(0, 0, 1280, 1024),
          Rect(1280, 0, 1280, 1024),
      });
@@ -507,7 +507,7 @@
  }
  
  void TabBoxTest::init()
-@@ -70,6 +122,28 @@
+@@ -70,6 +123,28 @@
  
  void TabBoxTest::cleanup()
  {
@@ -536,7 +536,7 @@
      Test::destroyWaylandConnection();
  }
  
-@@ -734,5 +808,286 @@
+@@ -734,5 +809,322 @@
      QVERIFY(Test::waitForWindowClosed(c1));
  }
  
@@ -683,6 +683,42 @@
 +    Test::keyboardKeyReleased(KEY_LEFTMETA, m_timestamp++);
 +    QVERIFY(!box->isGrabbed());
 +    QVERIFY(workspace()->activeWindow() != c1);
++}
++
++void TabBoxTest::testTaskbarWindowPublishedBeforeMapping()
++{
++#if !KWIN_BUILD_GLOBALSHORTCUTS
++    QSKIP("Can't test shortcuts without shortcuts");
++#endif
++    auto first = createTaskbarWindow();
++    QVERIFY(first);
++    QSignalSpy created(waylandServer(), &WaylandServer::windowCreated);
++    auto surface = Test::createSurface();
++    auto shell = Test::createXdgToplevelSurface(surface.get());
++    QVERIFY(surface && shell);
++    QTRY_COMPARE(created.count(), 1);
++    Window *pending = created.constFirst().constFirst().value<Window *>();
++    QVERIFY(pending);
++    const QUuid id = pending->internalId();
++    QVERIFY(!workspace()->findWindow(id));
++
++    // The taskbar can announce a toplevel before its first buffer maps it.
++    QVERIFY(taskbarCall(QStringLiteral("setTaskbarWindowOrder"), 7,
++                        {first->internalId().toString(), id.toString()}));
++    auto mapped = Test::renderAndWaitForShown(surface.get(), QSize(120, 80), Qt::blue);
++    QCOMPARE(mapped, pending);
++    workspace()->activateWindow(first);
++    auto box = workspace()->tabbox();
++    Test::keyboardKeyPressed(KEY_LEFTMETA, m_timestamp++);
++    tap(KEY_L);
++    QTRY_VERIFY(box->isGrabbed());
++    QCOMPARE(box->currentClientList(), QList<Window *>({first, mapped}));
++    QCOMPARE(box->currentClient(), mapped);
++    Test::keyboardKeyReleased(KEY_LEFTMETA, m_timestamp++);
++    QCOMPARE(workspace()->activeWindow(), mapped);
++    shell.reset();
++    surface.reset();
++    QVERIFY(Test::waitForWindowClosed(mapped));
 +}
 +
 +void TabBoxTest::testTaskbarProviders()
