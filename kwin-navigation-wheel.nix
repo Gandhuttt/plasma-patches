@@ -36,6 +36,16 @@
           postInstall = (old.postInstall or "") + ''
             mkdir -p "$tests/bin" "$tests/share/kwin/tabbox"
             cp bin/testGlobalShortcuts bin/testTabBox "$tests/bin/"
+            # Test executables link to the just-built libkwin. Replace build
+            # tree RPATH entries with the installed library before Nix fixup.
+            for binary in "$tests/bin/"*; do
+              IFS=: read -r -a paths <<< "$(patchelf --print-rpath "$binary")"
+              rpath="$out/lib"
+              for path in "''${paths[@]}"; do
+                [[ "$path" == /build/* || -z "$path" ]] || rpath="$rpath:$path"
+              done
+              patchelf --set-rpath "$rpath" "$binary"
+            done
             cp -r ../src/tabbox/switchers/thumbnail_grid "$tests/share/kwin/tabbox/"
           '';
         });
